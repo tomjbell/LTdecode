@@ -91,7 +91,7 @@ class CascadeDecoder:
             self.target_pauli = self.strat.pauli
 
     def decode(self, starting_point=None, first_traversal=False, pathfinding=True, eff_meas_basis=None, mc=False,
-               error_correcting=False, p=None, cascading=True):
+               error_correcting=False, p=None, cascading=True, get_first_strat=False):
         """
         :param first_traversal: All measurements succeed on the first traversal
         :param starting_point: If you are doing analytic tree search
@@ -123,6 +123,8 @@ class CascadeDecoder:
             self.strat = self.strategy_picker()
             self.target_pauli = self.strat.pauli
             self.current_target = self.strat.t
+            if get_first_strat:
+                return self.current_target, self.target_pauli
 
         while not self.lt_finished:
             # self.print_status()
