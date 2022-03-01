@@ -2,6 +2,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from itertools import product, combinations
 import numpy as np
+from alcpack import local_complementation
 
 
 def get_graph_from_neighbours(n_list):
@@ -16,7 +17,9 @@ def get_graph_from_neighbours(n_list):
 
 
 def draw_graph(g, spin_nodes=0, save=False, filename=None):
-    if type(spin_nodes) is int:
+    if spin_nodes is None:
+        spin_nodes = []
+    elif type(spin_nodes) is int:
         spin_nodes = [spin_nodes]
     colour_map = []
     for n in range(len(g.nodes)):
@@ -105,6 +108,37 @@ def gen_square_lattice_graph(nrows, nlayers):
                        for row_ix in range(nrows - 1)]
         graph.add_edges_from(these_edges)
     return graph
+
+def gen_rgs_graph(n):
+    """
+    generate the repeater graph state from "Nature Communications volume 6, Article number: 6787 (2015)"
+    :param n:
+    :return:
+    """
+    g = gen_fullyconnected_graph(2 * n)
+    extra_nodes = [i for i in range(2*n, 4 * n)]
+    g.add_nodes_from(extra_nodes)
+    g.add_edges_from([(node, node+2 * n) for node in range(2 * n)])
+    return g
+
+
+def x_meas_graph(g, v):
+    """
+    generate the new graph obtained by performing an x measurement on vertex v of the graph g
+    :param g:
+    :param v:
+    :return:
+    """
+    a = [x for x in g.neighbors(v)][0]
+    g2 = local_complementation(local_complementation(g, a), v)
+    nu_edge_list = []
+    for e in g2.edges:
+        if v not in e:
+            nu_edge_list.append(e)
+    out_graph = nx.Graph()
+    out_graph.add_nodes_from(g.nodes)
+    out_graph.add_edges_from(nu_edge_list)
+    return out_graph
 
 
 def main():
