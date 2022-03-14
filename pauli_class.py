@@ -203,6 +203,15 @@ class Pauli:
                 break
         return flag
 
+    def get_meas_type(self, ix):
+        if self.xs[ix]:
+            if self.zs[ix]:
+                return 'y'
+            else:
+                return 'x'
+        elif self.zs[ix]:
+            return 'z'
+
 
 def pauli_prod(list_of_paulis):
     out = list_of_paulis[0].copy()
