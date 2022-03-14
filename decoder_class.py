@@ -83,6 +83,7 @@ class CascadeDecoder:
             self.ec_checks_done = []
             self.ec_finished = False
             self.target_measured = False
+            self.current_target = None
         else:
             self.strategies_remaining, self.strat, self.current_target,  self.q_lost, self.arb_meas, self.pauli_done,\
             self.lt_finished, self.lt_success, self.target_measured, self.purgatory_q, self.purg_q_basis, self.counter, self.ec_checks_done, self.ec_finished = deepcopy(self.status_dicts[basis][tuple(successes)])
@@ -100,6 +101,9 @@ class CascadeDecoder:
         :param mc: monte-carlo?
         :param error_correcting: Are we doing error detection?
         :param p: Physical transmission probability (if doing monte-carlo)
+        TODO add indirect z measurements to the error-correcting part
+        TODO return the indices of the indirect z measurement qubits to pass to the error correction part for cascading
+
         """
 
         if pathfinding:
@@ -119,12 +123,11 @@ class CascadeDecoder:
                 meas_basis_dict = {'x':0, 'y':1, 'z':2, 'xy':3}
                 paulis = gen_logicals_from_stab_grp(self.stab_grp_nt, self.nq)[meas_basis_dict[eff_meas_basis]]
                 self.strategies_remaining = [Strategy(p, None) for p in paulis]
-
             self.strat = self.strategy_picker()
             self.target_pauli = self.strat.pauli
             self.current_target = self.strat.t
             if get_first_strat:
-                return self.current_target, self.target_pauli
+                return self.current_target, self.target_pauli, self.strat.s1, self.strat.s2
 
         while not self.lt_finished:
             # self.print_status()
@@ -367,7 +370,6 @@ class CascadeDecoder:
 
     def cache_status(self, decoder_type):
         """
-        TODO fix the bug in thsi function - the cached results in the dictionary seem to change based on later outcomes?
         """
         pattern = tuple(np.copy(self.success_pattern))
         if pattern not in self.status_dicts[decoder_type].keys():
@@ -378,7 +380,6 @@ class CascadeDecoder:
 
     def build_tree(self, basis='spc', ec=False, printing=False, cascading=True):
         """
-        TODO add a cascaded=False option to speed up decoding where you don't care about the indirect measurements
         """
         pathfinding = basis == 'spc'
         self.status_dicts[basis] = {}
@@ -444,9 +445,7 @@ class CascadeDecoder:
         want to ensure that as many qubits as possible in the pattern can be lost, and we can still switch to something else
         also want the patterns you switch to to satisfy these criteria - can do this to varying depth for more/less accurate
         decoding
-        TODO Calculate a score for each potential next measurement pattern to see how good it would be - do this to
-        TODO varying depths to have faster/slower and less/more accurate decoding
-        TODO for each potential measurement
+        TODO Calculate a score for each potential next measurement pattern to see how good it would be - do this to varying depths to have faster/slower and less/more accurate decoding for each potential measurement
         """
         current_winner = self.strategies_remaining[0]
         # print([a.pauli.to_str() for a in self.strategies_remaining])
