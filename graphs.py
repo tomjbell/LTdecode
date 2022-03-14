@@ -141,6 +141,35 @@ def x_meas_graph(g, v):
     return out_graph
 
 
+def y_meas_graph(g, v):
+    g2 = local_complementation(g, v)
+    nu_edge_list = []
+    for e in g2.edges:
+        if v not in e:
+            nu_edge_list.append(e)
+    out_graph = nx.Graph()
+    out_graph.add_nodes_from(g.nodes)
+    out_graph.add_edges_from(nu_edge_list)
+    return out_graph
+
+
+def z_meas_graph(g, v):
+    """
+    Perform a z measurement
+    :param g:
+    :param v:
+    :return:
+    """
+    nu_edge_list = []
+    for e in g.edges:
+        if v not in e:
+            nu_edge_list.append(e)
+    out_graph = nx.Graph()
+    out_graph.add_nodes_from(g.nodes)
+    out_graph.add_edges_from(nu_edge_list)
+    return out_graph
+
+
 def main():
     pass
 
