@@ -1,12 +1,12 @@
 import pickle
-from qutip import Qobj, ptrace
+# from qutip import Qobj, ptrace
 import numpy as np
 
 
-def partial_trace(mat, qubits_to_keep, n):
-    q = Qobj(mat, dims=[[2]*n, [2]*n])
-    q2 = q.ptrace(qubits_to_keep)
-    return np.array(q2)
+# def partial_trace(mat, qubits_to_keep, n):
+#     q = Qobj(mat, dims=[[2]*n, [2]*n])
+#     q2 = q.ptrace(qubits_to_keep)
+#     return np.array(q2)
 
 
 def save_obj(obj, name, path):

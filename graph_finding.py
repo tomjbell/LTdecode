@@ -5,13 +5,49 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
 from cascaded import AnalyticCascadedResult
-from CodesFunctions.decode_success_funcs import plot_best_trees, tot_q
+# from CodesFunctions.decode_success_funcs import plot_best_trees, tot_q
 from decoder_class import CascadeDecoder
-from CodesFunctions.graphs import gen_linear_graph, gen_ring_graph, gen_star_graph
+from graphs import gen_linear_graph, gen_ring_graph, gen_star_graph
 from helpers import load_obj
 from random import randrange, choice, random
 from time import time
 from itertools import combinations, groupby
+
+
+def tot_q(concat):
+    """For a given concatenation, find the total number of required qubits"""
+    layer_tots = [1]
+    for x in concat:
+        layer_tots.append(layer_tots[-1] * (x-1))
+    return sum(layer_tots)
+
+
+def fit_best_trees(capture, deg, max_x=None):
+    path_to_data = os.getcwd() + '/stef_data'
+    for i in os.listdir(path_to_data):
+        if os.path.isfile(os.path.join(path_to_data, i)) and i.startswith(
+                f"TreeGraph_LTvsQubitNum_random_t{capture}_MaxLayers"):
+            print(i)
+            tree_data = np.loadtxt(open(os.path.join(path_to_data, i), "rb"), delimiter=",")
+            print(tree_data)
+            xdat, ydat = [], []
+            for i in range(len(tree_data[0, :])):
+                logx = np.log(tree_data[0, :][i])
+                logy = np.log(tree_data[1, :][i])
+                if max_x is None or logx < max_x:
+                    xdat.append(logx)
+                    ydat.append(logy)
+            fit = np.polyfit(xdat, ydat, deg=deg)
+    return fit
+
+
+def plot_best_trees(capture):
+    """From the datafiles in data plot the best tree graph performance for given loss"""
+    path_to_data = os.getcwd() + '/stef_data'
+    for i in os.listdir(path_to_data):
+        if os.path.isfile(os.path.join(path_to_data, i)) and i.startswith(f"TreeGraph_LTvsQubitNum_random_t{capture}_MaxLayers"):
+            tree_data = np.loadtxt(open(os.path.join(path_to_data, i), "rb"), delimiter=",")
+            plt.plot(tree_data[0, :], tree_data[1, :], '--')
 
 
 def test_random_graphs(n, n_samples=4):
@@ -352,7 +388,6 @@ def get_fit_func(eta):
     """
     Get an expression for the best trees curve so you can look at only the graphs that win
     """
-    from CodesFunctions.decode_success_funcs import fit_best_trees
     deg = 5
     fit = fit_best_trees(eta, deg=deg, max_x=9)
 
