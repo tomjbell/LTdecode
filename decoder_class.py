@@ -1,17 +1,25 @@
 import random
 from pauli_class import Pauli, Strategy, multi_union
-from stab_formalism import is_compatible, stabilizers_from_graph, gen_strats_from_stabs, gen_logicals_from_stab_grp, gen_stabs_from_generators
+from stab_formalism import is_compatible, stabilizers_from_graph, gen_strats_from_stabs, gen_logicals_from_stab_grp, \
+    gen_stabs_from_generators
 import numpy as np
-from error_correction import pauli_error_decoder
+from error_correction import pauli_error_decoder, cascade_error_correction
 from copy import deepcopy
 
 
 class DecoderOutcome:
-    def __init__(self, counter, checks, target_paulis, output):
+    def __init__(self, counter, checks, target_paulis, output, success_pattern=None, indirect_ixs=None):
         self.counter = counter
         self.checks = checks
         self.target_paulis = target_paulis
         self.t = output
+        self.success_pattern = success_pattern
+        self.indirect_ixs = indirect_ixs
+
+    def no_flip_prob_cascade(self, accuracies):
+        prob, confs = cascade_error_correction(self.target_paulis, self.checks, 0, accuracies,
+                                               indirect_z_ixs=self.indirect_ixs)
+        return prob
 
     def no_flip_prob(self, ps):
         if self.t is not None:
@@ -26,8 +34,8 @@ class DecoderOutcome:
         aa = xx = yy = zz = transmission
         af = xf = yf = zf = 1 - transmission
         azi = xzi = yzi = zzi = 0
-        return xx ** counts[0] * xzi ** counts[1] * xf ** counts[2] * zz ** counts[3] * zzi ** counts[4]\
-               * zf ** counts[5] * yy ** counts[6] * yzi ** counts[7] * yf ** counts[8] * aa ** counts[9]\
+        return xx ** counts[0] * xzi ** counts[1] * xf ** counts[2] * zz ** counts[3] * zzi ** counts[4] \
+               * zf ** counts[5] * yy ** counts[6] * yzi ** counts[7] * yf ** counts[8] * aa ** counts[9] \
                * azi ** counts[10] * af ** counts[11]
 
 
@@ -60,9 +68,11 @@ class CascadeDecoder:
         self.target_pauli = None
         self.ec_pauli = None
         self.target_measured = False
-        self.counter = {'xx':0, 'xzi':0, 'xf':0, 'zz':0, 'zzi':0, 'zf':0, 'yy':0, 'yzi':0, 'yf':0, 'aa':0, 'azi':0, 'af':0}  # Track the number of XX, XZ, Xf, ZZ, Zf measurements that occur
+        self.counter = {'xx': 0, 'xzi': 0, 'xf': 0, 'zz': 0, 'zzi': 0, 'zf': 0, 'yy': 0, 'yzi': 0, 'yf': 0, 'aa': 0,
+                        'azi': 0, 'af': 0}  # Track the number of XX, XZ, Xf, ZZ, Zf measurements that occur
         self.expr_dicts = {'spc': {}, 'x': {}, 'y': {}, 'z': {}, 'xy': {}}
         self.successful_outcomes = {'spc': [], 'x': [], 'y': [], 'z': [], 'xy': []}
+        self.indirect_meas_ixs = []
 
     def set_params(self, successes, basis, first_pass=False):
         """
@@ -84,9 +94,11 @@ class CascadeDecoder:
             self.ec_finished = False
             self.target_measured = False
             self.current_target = None
+            self.indirect_meas_ixs = []
         else:
-            self.strategies_remaining, self.strat, self.current_target,  self.q_lost, self.arb_meas, self.pauli_done,\
-            self.lt_finished, self.lt_success, self.target_measured, self.purgatory_q, self.purg_q_basis, self.counter, self.ec_checks_done, self.ec_finished = deepcopy(self.status_dicts[basis][tuple(successes)])
+            self.strategies_remaining, self.strat, self.current_target, self.q_lost, self.arb_meas, self.pauli_done, \
+            self.lt_finished, self.lt_success, self.target_measured, self.purgatory_q, self.purg_q_basis, self.counter, self.ec_checks_done, self.ec_finished, self.indirect_meas_ixs = deepcopy(
+                self.status_dicts[basis][tuple(successes)])
 
             self.success_pattern = successes.copy()
             self.target_pauli = self.strat.pauli
@@ -120,7 +132,7 @@ class CascadeDecoder:
             if pathfinding:
                 self.strategies_remaining = gen_strats_from_stabs(self.stab_grp_nt, self.nq, get_individuals=True)
             else:
-                meas_basis_dict = {'x':0, 'y':1, 'z':2, 'xy':3}
+                meas_basis_dict = {'x': 0, 'y': 1, 'z': 2, 'xy': 3}
                 paulis = gen_logicals_from_stab_grp(self.stab_grp_nt, self.nq)[meas_basis_dict[eff_meas_basis]]
                 self.strategies_remaining = [Strategy(p, None) for p in paulis]
             self.strat = self.strategy_picker()
@@ -139,6 +151,7 @@ class CascadeDecoder:
                     self.success_pattern.append(1)
                     self.pauli_done.update_zs(self.purgatory_q, 1)
                     self.counter[f'{meas_type}zi'] += 1
+                    self.indirect_meas_ixs.append(self.purgatory_q)
                 else:
                     self.success_pattern.append(0)
                     self.q_lost.append(self.purgatory_q)
@@ -168,6 +181,7 @@ class CascadeDecoder:
                         self.success_pattern.append(1)
                         self.pauli_done.update_zs(self.purgatory_q, 1)
                         self.counter['azi'] += 1
+                        self.indirect_meas_ixs.append(self.purgatory_q)
                     else:
                         self.success_pattern.append(0)
                         self.q_lost.append(self.purgatory_q)
@@ -254,31 +268,64 @@ class CascadeDecoder:
             if len(self.ec_checks_to_do) == 0 or set(self.ec_pauli.support).issubset(set(self.pauli_done.support)):
                 self.ec_finished = True
             while not self.ec_finished:
-                # print(self.success_pattern)
-                q = self.next_qubit(ec=True)
-                meas_type = measurement_type(self.ec_pauli, q)
-                good = self.next_meas_outcome(starting_point, mc=mc, first_traversal=first_traversal, p=p)
-                if good:
-                    self.success_pattern.append(1)
-                    self.pauli_done.update_zs(q, self.ec_pauli.zs[q])
-                    self.pauli_done.update_xs(q, self.ec_pauli.xs[q])
-                    self.counter[meas_type * 2] += 1
+                if cascading and self.purgatory_q is not None:  # Try and measure this qubit indirectly in Z
+                    meas_type = self.purg_q_basis
+                    good = self.next_meas_outcome(starting_point, mc=mc, p=p, first_traversal=first_traversal)
+                    print(f'{good=}')
+                    if good:
+                        self.success_pattern.append(1)
+                        self.pauli_done.update_zs(self.purgatory_q, 1)
+                        self.counter[f'{meas_type}zi'] += 1
+                        self.indirect_meas_ixs.append(self.purgatory_q)
+
+                    else:
+                        self.success_pattern.append(0)
+                        self.q_lost.append(self.purgatory_q)
+                        self.counter[f'{meas_type}f'] += 1
+                    self.purgatory_q = None
+                    self.purg_q_basis = None
+                    self.ec_checks_to_do, self.ec_pauli = self.get_best_ec_strats()
+                    # See if we have completed all the check measurements with the effective measurements, if so, finish
                     for check in self.ec_checks_to_do:
                         if q in check.support and set(check.support).issubset(set(self.pauli_done.support)):
                             self.ec_checks_to_do.remove(check)
                             self.ec_checks_done.append(check)
                             break
+                    if not self.ec_checks_to_do:
+                        self.ec_finished = True
+                    self.cache_status(decoder_type)
+                    # self.print_status()
                 else:
-                    self.success_pattern.append(0)
-                    self.q_lost.append(q)
-                    self.counter[meas_type+'f'] += 1
-                    self.ec_checks_to_do, self.ec_pauli = self.get_best_ec_strats()
-                if not self.ec_checks_to_do:
-                    self.ec_finished = True
-                self.cache_status(decoder_type)
-                if len(self.ec_checks_to_do) == 0 or set(self.ec_pauli.support).issubset(set(self.pauli_done.support)):
-                    self.ec_finished = True
-        return self.lt_success, self.success_pattern, self.pauli_done, self.arb_meas, self.q_lost, self.counter, self.ec_checks_done
+                    # print(self.success_pattern)
+                    q = self.next_qubit(ec=True)
+                    meas_type = measurement_type(self.ec_pauli, q)
+                    good = self.next_meas_outcome(starting_point, mc=mc, first_traversal=first_traversal, p=p)
+                    if good:
+                        self.success_pattern.append(1)
+                        self.pauli_done.update_zs(q, self.ec_pauli.zs[q])
+                        self.pauli_done.update_xs(q, self.ec_pauli.xs[q])
+                        self.counter[meas_type * 2] += 1
+                        for check in self.ec_checks_to_do:
+                            if q in check.support and set(check.support).issubset(set(self.pauli_done.support)):
+                                self.ec_checks_to_do.remove(check)
+                                self.ec_checks_done.append(check)
+                                break
+                    else:
+                        self.success_pattern.append(0)
+                        if cascading:
+                            self.purgatory_q = q
+                            self.purg_q_basis = meas_type
+                        else:
+                            self.q_lost.append(q)
+                            self.counter[f'{meas_type}f'] += 1
+                        self.ec_checks_to_do, self.ec_pauli = self.get_best_ec_strats()
+                    if not (self.purgatory_q or self.ec_checks_to_do):
+                        self.ec_finished = True
+                    self.cache_status(decoder_type)
+                    if not self.purgatory_q and (len(self.ec_checks_to_do) == 0 or set(self.ec_pauli.support).issubset(
+                            set(self.pauli_done.support))):
+                        self.ec_finished = True
+        return self.lt_success, self.success_pattern, self.pauli_done, self.arb_meas, self.q_lost, self.counter, self.ec_checks_done, self.indirect_meas_ixs
 
     def next_measurement(self, success_bits, decoder_type, ec=True, cascading=False, print_status=False):
         """
@@ -374,8 +421,11 @@ class CascadeDecoder:
         pattern = tuple(np.copy(self.success_pattern))
         if pattern not in self.status_dicts[decoder_type].keys():
             s = self.strat.copy()
-            self.status_dicts[decoder_type][pattern] = (deepcopy(self.strategies_remaining), s, self.current_target, deepcopy(self.q_lost), deepcopy(self.arb_meas), self.pauli_done.copy(),
-                                                  self.lt_finished, self.lt_success, self.target_measured, self.purgatory_q, self.purg_q_basis, self.counter.copy(), self.ec_checks_done.copy(), self.ec_finished)
+            self.status_dicts[decoder_type][pattern] = (
+            deepcopy(self.strategies_remaining), s, self.current_target, deepcopy(self.q_lost), deepcopy(self.arb_meas),
+            self.pauli_done.copy(),
+            self.lt_finished, self.lt_success, self.target_measured, self.purgatory_q, self.purg_q_basis,
+            self.counter.copy(), self.ec_checks_done.copy(), self.ec_finished, self.indirect_meas_ixs.copy())
             # self.print_status()
 
     def build_tree(self, basis='spc', ec=False, printing=False, cascading=True):
@@ -389,9 +439,12 @@ class CascadeDecoder:
         out = first_pattern
         self.successful_outcomes[basis] = []
         while 1 in out:
-            while out[-1] == 0:  # Trim trailing zeros from prefix, i.e. go up to the lowest point in the tree where there was a successful measurement
+            while out[
+                -1] == 0:  # Trim trailing zeros from prefix, i.e. go up to the lowest point in the tree where there was a successful measurement
                 del out[-1]
-            success, success_pattern, pauli_done, arb_meas, q_lost, counter, checks_done = self.decode(starting_point=out[:-1], first_traversal=first_pass, pathfinding=pathfinding, eff_meas_basis=basis, error_correcting=ec, cascading=cascading)
+            success, success_pattern, pauli_done, arb_meas, q_lost, counter, checks_done, indirect_ixs = self.decode(
+                starting_point=out[:-1], first_traversal=first_pass, pathfinding=pathfinding, eff_meas_basis=basis,
+                error_correcting=ec, cascading=cascading)
             if success:
                 success_count += 1
                 if pathfinding:
@@ -402,7 +455,9 @@ class CascadeDecoder:
                         print(f'{self.strat.s2.to_str()=}')
                         print([c.to_str() for c in self.ec_checks_done])
                         print('\n')
-                    self.successful_outcomes[basis].append(DecoderOutcome(counter, self.ec_checks_done, [self.strat.s1, self.strat.s2], self.strat.t))
+                    self.successful_outcomes[basis].append(
+                        DecoderOutcome(counter, self.ec_checks_done, [self.strat.s1, self.strat.s2], self.strat.t,
+                                       success_pattern, indirect_ixs))
                 else:
                     if printing:
                         print(f'{success_pattern=}')
@@ -410,7 +465,9 @@ class CascadeDecoder:
                         print(f'{success=}')
                         print('\n')
 
-                    self.successful_outcomes[basis].append(DecoderOutcome(counter, self.ec_checks_done, [self.strat.pauli], None))
+                    self.successful_outcomes[basis].append(
+                        DecoderOutcome(counter, self.ec_checks_done, [self.strat.pauli], None, success_pattern,
+                                       indirect_ixs))
             first_pass = False
             out = success_pattern
 
@@ -435,8 +492,9 @@ class CascadeDecoder:
             strats = self.strategies_remaining
 
         return [s for s in strats if (len(set(q_lost) & set(s.pauli.support)) == 0 and len(
-            set(arb) & set(s.pauli.support)) == 0 and s.t not in q_lost and is_compatible(s.pauli, p, no_supersets=False)
-            and s.t not in set(p.support))]
+            set(arb) & set(s.pauli.support)) == 0 and s.t not in q_lost and is_compatible(s.pauli, p,
+                                                                                          no_supersets=False)
+                                      and s.t not in set(p.support))]
 
     def strategy_picker(self):
 
@@ -470,7 +528,8 @@ class CascadeDecoder:
                     tot_weight_corr = 0
                     sub_strats = self.update_available_strats(arb_meas=[s.t])
 
-                    for q in s.to_measure(self.q_lost, self.pauli_done, None):  # For each qubit that could be lost, are we tolerant?
+                    for q in s.to_measure(self.q_lost, self.pauli_done,
+                                          None):  # For each qubit that could be lost, are we tolerant?
                         sub_sub_strats = self.update_available_strats(lost=[q], strats=sub_strats)
                         # print(f'{q=}, {[s.pauli.to_str() for s in sub_sub_strats]}')
                         if len(sub_sub_strats) == 0:
@@ -481,7 +540,7 @@ class CascadeDecoder:
                     av_weight_corr = tot_weight_corr / (weight - num_not_tolerant) if num_not_tolerant != weight else 0
                     # print(num_not_tolerant, av_weight_corr)
                     if num_not_tolerant < lowest_uncorrectable:
-                        nu_winner=True
+                        nu_winner = True
                     elif num_not_tolerant == lowest_uncorrectable:
                         if weight < lowest_weight:
                             nu_winner = True
@@ -504,7 +563,8 @@ class CascadeDecoder:
         from error_correction import best_checks
         banned_q = [0, self.current_target]
         banned_q += self.q_lost
-        checks = best_checks(self.graph, self.pauli_done, banned_qs=banned_q, stab_nt=self.stab_grp_nt)  # Needs to be compatible with the pauli measurements done, not just the target (may be extras)
+        checks = best_checks(self.graph, self.pauli_done, banned_qs=banned_q,
+                             stab_nt=self.stab_grp_nt)  # Needs to be compatible with the pauli measurements done, not just the target (may be extras)
         if checks:
             overall_pauli = multi_union(checks)
             return checks, overall_pauli
@@ -533,8 +593,10 @@ class CascadeDecoder:
         return self.expr_dicts[basis]
 
     def success_prob(self, xx, xzi, xf, zz, zzi, zf, yy, yzi, yf, aa, azi, af, basis='spc'):
-        return sum([self.expr_dicts[basis][k] * xx**k[0] * xzi ** k[1] * xf ** k[2] * zz ** k[3] * zzi ** k[4] * zf **k[5]
-                        * yy ** k[6] * yzi ** k[7] * yf ** k[8] * aa ** k[9] * azi ** k[10] * af ** k[11] for k in self.expr_dicts[basis].keys()])
+        return sum(
+            [self.expr_dicts[basis][k] * xx ** k[0] * xzi ** k[1] * xf ** k[2] * zz ** k[3] * zzi ** k[4] * zf ** k[5]
+             * yy ** k[6] * yzi ** k[7] * yf ** k[8] * aa ** k[9] * azi ** k[10] * af ** k[11] for k in
+             self.expr_dicts[basis].keys()])
 
     def success_prob_outcome_list(self, transmission, depolarizing_noise, basis='spc', ec=True):
         """
@@ -548,7 +610,7 @@ class CascadeDecoder:
             prob = item.outcome_prob(transmission)
             tot_prob += prob
             if ec:
-                tot_pauli_success += prob * item.no_flip_prob([depolarizing_noise/4])
+                tot_pauli_success += prob * item.no_flip_prob([depolarizing_noise / 4])
         if ec:
             tot_pauli_success_given_teleportation = tot_pauli_success / tot_prob
             # print(tot_prob, tot_pauli_success, tot_pauli_success_given_teleportation)
@@ -632,6 +694,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
