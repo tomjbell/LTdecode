@@ -109,6 +109,7 @@ def gen_square_lattice_graph(nrows, nlayers):
         graph.add_edges_from(these_edges)
     return graph
 
+
 def gen_rgs_graph(n):
     """
     generate the repeater graph state from "Nature Communications volume 6, Article number: 6787 (2015)"
@@ -138,7 +139,7 @@ def x_meas_graph(g, v):
     out_graph = nx.Graph()
     out_graph.add_nodes_from(g.nodes)
     out_graph.add_edges_from(nu_edge_list)
-    return out_graph
+    return local_complementation(out_graph, a)
 
 
 def y_meas_graph(g, v):
@@ -170,8 +171,47 @@ def z_meas_graph(g, v):
     return out_graph
 
 
+def gen_cascaded_graph(graph_list):
+    """
+    Generate the networkx graph corresponding to the cascade in graph_list
+    :param graph_list:
+    :return:
+    """
+    depth = len(graph_list)
+    qubit_labels = [[0]]  # A list of lists, each representing qubit number at each layer
+    edges = []
+    current_max = 0
+
+    for d in range(depth):
+        # Find qubit numbers in this layer.
+        new_layer_qbts = []
+        new_layer_edges = []
+        g_qbts = list(graph_list[d].nodes())
+        g_qbts.remove(0)
+        g_edges = list(graph_list[d].edges())
+        for qbt_root in qubit_labels[d]:
+            new_layer_qbts += [q + current_max for q in g_qbts]
+            for e in g_edges:
+                if e[0] == 0:
+                    new_layer_edges.append((qbt_root, e[1] + current_max))
+                else:
+                    new_layer_edges.append((e[0] + current_max, e[1] + current_max))
+            current_max = new_layer_qbts[-1]
+        qubit_labels.append(new_layer_qbts)
+        edges += new_layer_edges
+
+    g = nx.Graph()
+    g.add_edges_from(edges)
+    return g, qubit_labels
+
+
 def main():
-    pass
+    g3 = gen_ring_graph(3)
+    g5 = gen_ring_graph(5)
+    g, nodes = gen_cascaded_graph([g5, g5, g3])
+    draw_graph(g)
+    plt.show()
+
 
 
 if __name__ == '__main__':
