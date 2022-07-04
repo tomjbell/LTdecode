@@ -1,5 +1,5 @@
 import pickle
-# from qutip import Qobj, ptrace
+from os import getcwd
 import numpy as np
 
 
@@ -7,6 +7,22 @@ import numpy as np
 #     q = Qobj(mat, dims=[[2]*n, [2]*n])
 #     q2 = q.ptrace(qubits_to_keep)
 #     return np.array(q2)
+def bisection_search(interval, func, depth=10, y0=None, y1=None):
+    k0, k1 = interval[0], interval[1]
+    mid = 0.5 * (k0 + k1)
+    if depth == 0:
+        return (k0 + k1)/2
+    else:
+        if y0 is None:
+            y0 = func(k0)
+            y1 = func(k1)
+        ymid = func(mid)
+        if y0 * ymid < 0:
+            return bisection_search([k0, mid], func, depth=depth-1, y0=y0, y1=ymid)
+        elif ymid * y1 < 0:
+            return bisection_search([mid, k1], func, depth=depth-1, y0=ymid, y1=y1)
+        else:
+            raise ValueError('No root in interval')
 
 
 def save_obj(obj, name, path):
@@ -14,9 +30,16 @@ def save_obj(obj, name, path):
         pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
 
 
-def load_obj(name, path):
-    with open(path + '/' + name + '.pkl', 'rb') as f:
+def load_obj(name, path, suffix='.pkl'):
+    with open(path + '/' + name + suffix, 'rb') as f:
         return pickle.load(f)
+
+
+def expr_to_prob(expr, t):
+    tot = 0
+    for key, val in expr.items():
+        tot += val * t ** key[0] * (1-t)**key[1]
+    return tot
 
 
 def add(b1, b2):
@@ -51,4 +74,7 @@ def bin_to_num(b):
 
 
 if __name__ == '__main__':
-    print(bin_to_num([0, 1, 1, 0, 0, 1]), bin_to_num([0, 1, 1]), bin_to_num([0, 0, 1]))
+    x = load_obj('8QubitResultDicts', getcwd() + '/LC_equiv_graph_data')
+    print(x[0])
+    y = load_obj('10QubitResultDicts', getcwd() + '/LC_equiv_graph_data')
+    print(y[0])
