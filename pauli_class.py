@@ -78,6 +78,9 @@ class Pauli:
                 out_str.append(f'X{i}')
         return '_'.join(out_str)
 
+    def weight(self):
+        return sum([(self.zs[j] or self.xs[j]) for j in range(self.n)])
+
     def add_qubit(self):
         self.zs.append(0)
         self.xs.append(0)
@@ -174,6 +177,19 @@ class Pauli:
         sig_x = np.array([[0, 1], [1, 0]])
         b = [x%2 for x in np.diag(self.xz_mat @ sig_x @ other.xz_mat.T)]
         return sum(b) == 0
+
+    def anticommuting_ix(self, other):
+        """Find the qubit indices where the two pauli operators anticommute"""
+        anticoms = []
+        for q in range(self.n):
+            r = 0
+            if self.zs[q] == 1 and other.xs[q] == 1:
+                r += 1
+            if self.xs[q] == 1 and other.zs[q] == 1:
+                r += 1
+            if r % 2 == 1:
+                anticoms.append(q)
+        return anticoms
 
     def commutes_global(self, other):
         """Do the two Pauli operators commute"""
