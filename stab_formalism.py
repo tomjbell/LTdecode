@@ -116,7 +116,7 @@ def stabilizers_from_graph(g):
     neighbour_list = []
     for node in g.nodes:
         neighbour_list.append((node, [n for n in g.neighbors(node)]))
-    stab_gens = [Pauli(node[1], [node[0]], neighbour_list[-1][0] + 1, 0) for node in neighbour_list]
+    stab_gens = [Pauli(node[1], [node[0]], g.number_of_nodes(), 0) for node in neighbour_list]
     return stab_gens
 
 
@@ -240,3 +240,38 @@ def gen_logicals_from_stab_grp(stabs, n_qubits):
     x_log, y_log, z_log = [[l for l in m_list if 0 not in l.support] for m_list in (all_x_log, all_y_log, all_z_log)]
     x_or_y_log = x_log + y_log
     return x_log, y_log, z_log, x_or_y_log
+
+
+class Stabilizer:
+    def __init__(self, generators):
+        self.generators = generators
+        self.n = generators[0].n
+
+    def x_meas(self, qubit, outcome=1):
+        if outcome == 1:
+            i = 0
+        elif outcome == -1:
+            i = 2
+        else:
+            raise ValueError
+        p = Pauli(z_ix=[], x_ix=[qubit], n=self.n, i_pow=i)
+        nu_gen_list = []
+        first_anticommuting_gen = None
+        for gen in self.generators:
+            if p.commutes_global(gen):
+                nu_gen_list.append(gen)
+            else:
+                if first_anticommuting_gen is None:
+                    nu_gen_list.append(p)
+                    first_anticommuting_gen = gen
+                else:
+                    nu_gen_list.append(first_anticommuting_gen.mult(gen))
+        self.generators = nu_gen_list[:]
+
+
+def main():
+    pass
+
+
+if __name__ == '__main__':
+    main()
