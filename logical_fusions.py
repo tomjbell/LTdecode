@@ -1,11 +1,13 @@
 import networkx as nx
 import numpy as np
 from pauli_class import Pauli
-from stab_formalism import stabilizers_from_graph, gen_stabs_from_generators, gen_logicals_from_stab_grp
+from stab_formalism import stabilizers_from_graph, gen_stabs_from_generators, gen_logicals_from_stab_grp, \
+    gen_strats_from_stabs
 from itertools import combinations, product
 from graphs import gen_ring_graph, draw_graph
 import matplotlib.pyplot as plt
 from helpers import bisection_search
+from copy import deepcopy
 
 
 class FusionDecoder:
@@ -222,6 +224,203 @@ class FusionDecoder:
     #         # print(f'{logical_pair=}', f'{n_transmitted=}', f'{n_lost=}', f'{n_fused=}', f'{n_failed=}', prob)
     #         win_prob += prob
     #     return win_prob
+
+
+class AdaptiveFusionDecoder:
+    def __init__(self, graph, meas_outcome_prefix=None):
+        self.nq = graph.number_of_nodes()
+        self.graph = graph
+        stab_generators = stabilizers_from_graph(graph)
+        self.stab_grp_t, self.stab_grp_nt = gen_stabs_from_generators(stab_generators, split_triviality=True)
+        self.q_lost = []
+        self.fusion_failures = {'x':[], 'z': []}
+        self.failure_q = None
+        self.qubit_to_fuse = None
+        self.fused_qubits = []
+        self.pauli_done = Pauli([], [], self.nq, 0)
+        self.strategies_remaining = None
+        self.p_log_remaining = [None, None]
+        if meas_outcome_prefix is None:
+            self.success_pattern = []
+        else:
+            self.success_pattern = meas_outcome_prefix
+        self.fusion_complete = False
+        self.xlog_measured = False
+        self.zlog_measured = False
+        self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fused': 0, 'ffx': 0, 'ffz': 0}
+        self.current_target = None
+        self.strat = None
+        self.target_pauli = None
+        self.target_measured = False
+        self.successful_outcomes = {'fusion': [], 'xrec': [], 'zrec': []}
+        self.status_dict = {}
+        self.finished = False
+        self.depth = 0  #TODO artifact of other decoder, remove when possible
+
+    def set_params(self, successes, first_pass=False):
+        if first_pass:
+            self.fusion_complete = False
+            self.xlog_measured = False
+            self.zlog_measured = False
+            self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fused': 0, 'ffx': 0, 'ffz': 0}
+            self.q_lost = []
+            self.fusion_failures = {'x': [], 'z': []}
+            self.fused_qubits = []
+            self.pauli_done = Pauli([], [], self.nq, 0)
+            self.failure_q = None
+            self.qubit_to_fuse = None
+            self.finished = False
+        else:
+            self.strategies_remaining, self.p_log_remaining, self.strat, self.current_target, self.q_lost, self.fusion_complete, \
+            self.xlog_measured, self.zlog_measured, self.fused_qubits, self.fusion_failures, self.pauli_done, \
+            self.target_measured, self.counter, self.failure_q, self.qubit_to_fuse, self.finished = deepcopy(self.status_dict[tuple(successes)])
+            self.success_pattern = successes.copy()
+            self.target_pauli = self.strat.pauli
+
+    def decode(self, starting_point=None, first_traversal=False, mc=False, pfail=0.5, w=0.5, eta=1.0):
+        if starting_point is None:
+            assert first_traversal and mc
+        self.set_params(starting_point, first_pass=first_traversal)
+
+        # Identify the set of possible measurement strategies
+        if first_traversal:
+            self.strategies_remaining = gen_strats_from_stabs(self.stab_grp_nt, self.nq, get_individuals=True)
+            logical_operators = gen_logicals_from_stab_grp(self.stab_grp_nt, self.nq)
+            self.p_log_remaining = [logical_operators[0], logical_operators[2]]
+            self.strat = self.strategy_picker()
+            self.target_pauli = self.strat.pauli
+            self.current_target = self.strat.t
+
+        while not self.finished:
+            # 1 Identify the best strategy and try to measure the target qubit
+            while not self.target_measured:
+                if self.qubit_to_fuse is None and self.failure_q is None:
+                    # See if the target_qubit is lost
+                    good = self.next_meas_outcome(starting_point, mc=mc, p=eta)
+                    if good:
+                        self.success_pattern.append(1)
+                        self.qubit_to_fuse = self.current_target
+                    else:
+                        self.success_pattern.append(0)
+                        self.q_lost.append(self.current_target)
+                        self.update_available_strats()
+
+                if self.qubit_to_fuse is not None:
+                    assert self.failure_q is None
+                    good = self.next_meas_outcome(starting_point, mc=mc, p=1-pfail)
+                    if good:
+                        self.success_pattern.append(1)  # here a 1 corresponds to measuring in the x basis
+                        self.fused_qubits.append(self.qubit_to_fuse)
+                        self.counter['fusion'] += 1
+                        self.target_measured = True
+                    else:
+                        self.success_pattern.append(0)
+                        self.failure_q = self.qubit_to_fuse
+                    self.qubit_to_fuse = None
+
+                self.update_available_strats()
+                self.cache_status  # TODO Implement the caching
+
+                if self.failure_q is not None:  # decide in which basis the fusion failure qubit is to be measured
+                    good = self.next_meas_outcome(starting_point, mc=mc, p=1-w)
+                    if good:
+                        self.success_pattern.append(1)  # here a 1 corresponds to measuring in the x basis
+                        self.pauli_done.update_xs(self.failure_q, 1)
+                        self.counter['ffx'] += 1
+                        self.fusion_failures['x'].append(self.failure_q)
+                    else:
+                        self.success_pattern.append(0)
+                        self.pauli_done.update_zs(self.failure_q, 1)
+                        self.counter['ffz'] += 1
+                        self.fusion_failures['z'].append(self.failure_q)
+                    self.failure_q = None
+
+                self.update_available_strats() #TODO Configure this so it will update the teleportation and logical pauli measurements
+
+
+
+
+                pass
+                # do this
+                #4 possible outcomes for an attempted target measurement - need to consider how all of them affect future measurements
+                # update the remaining strategies
+
+        while not self.lt_finished:
+            # Try to do the remaining pauli mesurements required for teleportation to the fused qubit
+            pass
+
+    def get_probabilitites(self):
+        # For each possible output qubit in the results list, find the probability of the fusion being implemented
+        # The pauli measurements required to get to this qubit are then summed over to find the probability of this strategy
+
+
+        pass
+
+    def strategy_picker(self):
+
+        """
+        We want a combination of the measurement with the smallest support and the largest number of compatible measurements
+        want to ensure that as many qubits as possible in the pattern can be lost, and we can still switch to something else
+        also want the patterns you switch to to satisfy these criteria - can do this to varying depth for more/less accurate
+        decoding
+        TODO Calculate a score for each potential next measurement pattern to see how good it would be - do this to varying depths to have faster/slower and less/more accurate decoding for each potential measurement
+        """
+        current_winner = self.strategies_remaining[0]
+        # print([a.pauli.to_str() for a in self.strategies_remaining])
+        # print(f'{current_winner.pauli.to_str()=}')
+        num_q = self.nq
+        lowest_uncorrectable = num_q
+        lowest_weight = num_q
+        lowest_av_weight_correction = num_q
+        lowest_non_z = num_q
+        for s in self.strategies_remaining:
+            nu_winner = False
+            # print(s.pauli.to_str())
+            # print(f'{lowest_uncorrectable=}')
+            weight = len(s.pauli.support)
+            num_not_z = sum(s.pauli.xs)
+            num_not_tolerant = 0
+            if s.t == self.current_target or self.current_target is None:
+                if self.depth == 0 and weight > lowest_weight:
+                    pass
+                else:
+                    # Find the number of qubits whose loss cannot be tolerated, and the average weight of these measurements
+                    tot_weight_corr = 0
+                    sub_strats = self.update_available_strats(arb_meas=[s.t])
+
+                    for q in s.to_measure(self.q_lost, self.pauli_done,
+                                          None):  # For each qubit that could be lost, are we tolerant?
+                        sub_sub_strats = self.update_available_strats(lost=[q], strats=sub_strats)
+                        # print(f'{q=}, {[s.pauli.to_str() for s in sub_sub_strats]}')
+                        if len(sub_sub_strats) == 0:
+                            num_not_tolerant += 1
+                        elif self.depth == 1:
+                            min_weight_corr = min([len(s.pauli.support) for s in sub_sub_strats])
+                            tot_weight_corr += min_weight_corr
+                    av_weight_corr = tot_weight_corr / (weight - num_not_tolerant) if num_not_tolerant != weight else 0
+                    # print(num_not_tolerant, av_weight_corr)
+                    if num_not_tolerant < lowest_uncorrectable:
+                        nu_winner = True
+                    elif num_not_tolerant == lowest_uncorrectable:
+                        if weight < lowest_weight:
+                            nu_winner = True
+                        elif weight == lowest_weight:
+                            if av_weight_corr <= lowest_av_weight_correction:
+                                if self.prefer_z:
+                                    if num_not_z <= lowest_non_z:
+                                        nu_winner = True
+                                else:
+                                    nu_winner = True
+                    if nu_winner:
+                        current_winner = s
+                        lowest_weight = len(s.pauli.support)
+                        lowest_uncorrectable = num_not_tolerant
+                        lowest_av_weight_correction = av_weight_corr
+                        lowest_non_z = num_not_z
+        return current_winner
+
+
+
 
 
 def best_graphs_func(n):
