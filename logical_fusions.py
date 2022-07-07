@@ -1,6 +1,6 @@
 import networkx as nx
 import numpy as np
-from pauli_class import Pauli
+from pauli_class import Pauli, Strategy
 from stab_formalism import stabilizers_from_graph, gen_stabs_from_generators, gen_logicals_from_stab_grp, \
     gen_strats_from_stabs
 from itertools import combinations, product
@@ -8,6 +8,7 @@ from graphs import gen_ring_graph, draw_graph
 import matplotlib.pyplot as plt
 from helpers import bisection_search
 from copy import deepcopy
+from random import random
 
 
 class FusionDecoder:
@@ -247,7 +248,7 @@ class AdaptiveFusionDecoder:
         self.fusion_complete = False
         self.xlog_measured = False
         self.zlog_measured = False
-        self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fused': 0, 'ffx': 0, 'ffz': 0}
+        self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fusion': 0, 'ffx': 0, 'ffz': 0}
         self.current_target = None
         self.strat = None
         self.target_pauli = None
@@ -262,7 +263,7 @@ class AdaptiveFusionDecoder:
             self.fusion_complete = False
             self.xlog_measured = False
             self.zlog_measured = False
-            self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fused': 0, 'ffx': 0, 'ffz': 0}
+            self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fusion': 0, 'ffx': 0, 'ffz': 0}
             self.q_lost = []
             self.fusion_failures = {'x': [], 'z': []}
             self.fused_qubits = []
@@ -277,7 +278,7 @@ class AdaptiveFusionDecoder:
             self.success_pattern = successes.copy()
             self.target_pauli = self.strat.pauli
 
-    def decode(self, starting_point=None, first_traversal=False, mc=False, pfail=0.5, w=0.5, eta=1.0):
+    def decode(self, starting_point=None, first_traversal=False, mc=False, pfail=0.5, w=0.5, eta=1.0, printing=False):
         if starting_point is None:
             assert first_traversal and mc
         self.set_params(starting_point, first_pass=first_traversal)
@@ -286,28 +287,33 @@ class AdaptiveFusionDecoder:
         if first_traversal:
             self.strategies_remaining = gen_strats_from_stabs(self.stab_grp_nt, self.nq, get_individuals=True)
             logical_operators = gen_logicals_from_stab_grp(self.stab_grp_nt, self.nq)
-            self.p_log_remaining = [logical_operators[0], logical_operators[2]]
-            self.strat = self.strategy_picker()
+            self.p_log_remaining = [[Strategy(p) for p in logical_operators[i]] for i in (0, 2)]
+            self.strat = self.strategy_picker_new()
             self.target_pauli = self.strat.pauli
             self.current_target = self.strat.t
+            self.cache_status()
+
+        if printing:
+            self.print_status()
 
         while not self.finished:
             # 1 Identify the best strategy and try to measure the target qubit
-            while not self.target_measured:
+            # Only try to do fusion if we haven't done one yet, and there are still fusion strategies remaining
+            while (not self.target_measured) and self.strategies_remaining:
                 if self.qubit_to_fuse is None and self.failure_q is None:
                     # See if the target_qubit is lost
-                    good = self.next_meas_outcome(starting_point, mc=mc, p=eta)
+                    good = self.next_meas_outcome(starting_point, mc=mc, p=eta, first_traversal=first_traversal)
                     if good:
                         self.success_pattern.append(1)
                         self.qubit_to_fuse = self.current_target
                     else:
                         self.success_pattern.append(0)
                         self.q_lost.append(self.current_target)
-                        self.update_available_strats()
+                    self.cache_status()
 
                 if self.qubit_to_fuse is not None:
                     assert self.failure_q is None
-                    good = self.next_meas_outcome(starting_point, mc=mc, p=1-pfail)
+                    good = self.next_meas_outcome(starting_point, mc=mc, p=1-pfail, first_traversal=first_traversal)
                     if good:
                         self.success_pattern.append(1)  # here a 1 corresponds to measuring in the x basis
                         self.fused_qubits.append(self.qubit_to_fuse)
@@ -319,10 +325,10 @@ class AdaptiveFusionDecoder:
                     self.qubit_to_fuse = None
 
                 self.update_available_strats()
-                self.cache_status  # TODO Implement the caching
+                self.cache_status()  # TODO Implement the caching if you want this feature (not necessary but should be faster)
 
                 if self.failure_q is not None:  # decide in which basis the fusion failure qubit is to be measured
-                    good = self.next_meas_outcome(starting_point, mc=mc, p=1-w)
+                    good = self.next_meas_outcome(starting_point, mc=mc, p=1-w, first_traversal=first_traversal)
                     if good:
                         self.success_pattern.append(1)  # here a 1 corresponds to measuring in the x basis
                         self.pauli_done.update_xs(self.failure_q, 1)
@@ -335,28 +341,229 @@ class AdaptiveFusionDecoder:
                         self.fusion_failures['z'].append(self.failure_q)
                     self.failure_q = None
 
-                self.update_available_strats() #TODO Configure this so it will update the teleportation and logical pauli measurements
+                self.update_available_strats() #TODO Configure this so it will update the teleportation and logical pauli measurements available
+                self.finished = self.decoding_finished()
+                if not self.finished:
+                    self.strat = self.strategy_picker_new()
+                    self.target_pauli = self.strat.pauli
+                    self.current_target = self.strat.t
+                    self.target_measured = self.current_target in self.fused_qubits
+                    self.cache_status()
+                if printing:
+                    self.print_status()
 
 
 
 
-                pass
+            # Need to save the measurements done in the pre and post fusion parts of the decoder separately
+            # Now we want to try the Pauli measurements
+            if not self.finished:
+                self.print_status()
+                self.strat = self.strategy_picker_new()
+                self.target_pauli = self.strat.pauli
+                self.current_target = self.strat.t
+                self.target_measured = self.current_target in self.fused_qubits
+
+                q = list(set(self.target_pauli.support) - set(self.pauli_done.support))[0]  # Get next qubit to measure
+
+                meas_type = self.target_pauli.get_meas_type(q)
+
+                good = self.next_meas_outcome(starting_point, first_traversal=first_traversal)
+                if good:
+                    self.success_pattern.append(1)
+                    self.pauli_done.update_zs(q, self.target_pauli.zs[q])
+                    self.pauli_done.update_xs(q, self.target_pauli.xs[q])
+                    self.counter[meas_type] += 1
+                else:
+                    self.success_pattern.append(0)
+                    self.q_lost.append(q)
+                    self.counter[f'{meas_type}f'] += 1
+                self.update_available_strats()
+                self.finished = self.decoding_finished()
+
+                if printing:
+                    self.print_status()
+
+        return self.fusion_complete, self.xlog_measured, self.zlog_measured, self.success_pattern, self.pauli_done, self.fused_qubits, self.fusion_failures, self.counter
+
                 # do this
                 #4 possible outcomes for an attempted target measurement - need to consider how all of them affect future measurements
                 # update the remaining strategies
+        #
+        # while not self.lt_finished:
+        #     # Try to do the remaining pauli mesurements required for teleportation to the fused qubit
+        #     pass
 
-        while not self.lt_finished:
-            # Try to do the remaining pauli mesurements required for teleportation to the fused qubit
-            pass
+    def cache_status(self):
+        pattern = tuple(np.copy(self.success_pattern))
+        if pattern not in self.status_dict.keys():
+            print(f'Caching {pattern}')
+            s = self.strat.copy()
+            self.status_dict[pattern] = (deepcopy(self.strategies_remaining), deepcopy(self.p_log_remaining), s,
+                                         self.current_target, deepcopy(self.q_lost), self.fusion_complete,
+                                         self.xlog_measured, self.zlog_measured,  deepcopy(self.fused_qubits),
+                                         deepcopy(self.fusion_failures), self.pauli_done.copy(),
+                                         self.target_measured, self.counter,  deepcopy(self.failure_q),
+                                         self.qubit_to_fuse, self.finished)
+
+    def decoding_finished(self):
+        """
+        see if we have finished decoding, and whether logical fusion or logical pauli operators have been successfully
+        measured
+        :return:
+        """
+        protocol_finished = False
+        if self.pauli_done is not None and self.target_pauli is not None:
+            if self.pauli_done.contains_other(self.target_pauli) and (self.current_target in self.fused_qubits):
+                self.fusion_complete = True
+                self.xlog_measured = True  #TODO Check these explicitly?
+                self.zlog_measured = True
+                protocol_finished = True
+            elif (not self.strategies_remaining) and (not protocol_finished):  # if the fusion has failed, see if we can still recover a logical xx or zz
+                for x_log in self.p_log_remaining[0]:
+                    if self.pauli_done.contains_other(x_log.pauli, exclude=self.fused_qubits):
+                        self.xlog_measured = True
+                        assert not self.p_log_remaining[1]  #TODO maybe print here
+                        protocol_finished = True
+                        break
+                for z_log in self.p_log_remaining[1]:
+                    if self.pauli_done.contains_other(z_log.pauli, exclude=self.fused_qubits):
+                        self.zlog_measured = True
+                        assert not self.p_log_remaining[0]  #There shouldn't be any xlogicals remaining if pathfinding failed and zlogical succeeded
+                        protocol_finished = True
+                        break
+                assert not (self.xlog_measured and self.zlog_measured)  # Shouldn't be able to have done both if we failed pathfinding
+            if (not self.p_log_remaining[0]) and (not self.p_log_remaining[1]):  # If no X and no Z left then we fail
+                protocol_finished = True
+            return protocol_finished
+
+    def update_available_strats(self):
+        """
+        Update which measurement strategies remain for teleportation and logical x and z measurements.
+        :return: None
+        """
+        strats_xz = [deepcopy(self.p_log_remaining[0]), deepcopy(self.p_log_remaining[1])]
+        tele_strats = deepcopy(self.strategies_remaining)
+        self.strategies_remaining = [s for s in tele_strats if (len(set(self.q_lost) & set(s.pauli.support)) == 0 and len(
+            set(self.fused_qubits) & set(s.pauli.support)) == 0 and s.t not in self.q_lost and s.pauli.commutes_every(self.pauli_done)
+                                      and s.t not in set(self.pauli_done.support))]
+        self.p_log_remaining = [[s for s in strats_xz[i] if (len(set(self.q_lost) & set(s.pauli.support)) == 0)
+                                 and s.pauli.commutes_every(self.pauli_done)] for i in (0, 1)]
+
+    def print_status(self):
+        print(f'{self.pauli_done.to_str()=} \n {self.target_pauli.to_str()=} \n {self.current_target=} \n {self.q_lost=} \n '
+              f'{self.fused_qubits=} \n {self.fusion_failures=} \n {self.success_pattern=}')
+        print([s.pauli.to_str() for s in self.strategies_remaining])
+        print([s.pauli.to_str() for s in self.p_log_remaining[0]])
+        print([s.pauli.to_str() for s in self.p_log_remaining[1]])
+        print(f'{self.xlog_measured=}\n{self.zlog_measured=}\n{self.fusion_complete=}')
+        print(f'{self.finished=}')
+        print('\n')
+
+    def next_meas_outcome(self, starting_point, first_traversal=False, mc=False, p=None):
+        """
+        Assume we are doing the analytic decision tree building technique - so the outcome is determined by
+        which parts of the tree we have already searched
+        Always go fail, followed by all successes - this constitutes a depth-first traversal of the tree
+        If we are doing shot-by-shot decoding (how you would run an experiment) we need to return a bit determined
+        by the transmission probability of the channel
+        """
+        if mc:
+            r = random()
+            if r < p:
+                return 1
+            else:
+                return 0
+        else:
+            if first_traversal:
+                return 1
+            if len(self.success_pattern) == len(starting_point):
+                return 0
+            elif len(self.success_pattern) > len(starting_point):
+                return 1
+            else:
+                raise ValueError('outcome list should be longer than the starting point list')
+
+    def build_tree(self, printing=False):
+        """
+        """
+        self.status_dict = {}
+        success_count = 0
+        first_pattern = [1] * self.nq
+        first_pass = True
+        out = first_pattern
+        self.successful_outcomes = []
+        while 1 in out:
+            while out[-1] == 0:  # Trim trailing zeros from prefix, i.e. go up to the lowest point in the tree where there was a successful measurement
+                del out[-1]
+            success, xx_done, zz_done, success_pattern, paulis_done, fusions_done, fusion_failures_recovered,  counter = self.decode(
+                starting_point=out[:-1], first_traversal=first_pass)
+            if success or xx_done or zz_done:
+                if success:
+                    result = 'fusion'
+                elif xx_done:
+                    result = 'xrec'
+                else:
+                    result = 'zrec'
+                success_count += 1
+                if printing:
+                    print(f'{success_pattern=}')
+                    print(f'{self.strat.pauli.to_str()=}')
+                    print(f'{self.fused_qubits=}')
+                    print(f'{self.fusion_failures=}')
+                    print(f'{self.q_lost=}')
+                    print(f'{self.fusion_complete=}')
+                    print(f'{self.xlog_measured=}')
+                    print(f'{self.zlog_measured=}')
+                    print('\n')
+
+                #TODO save these results somewhere so that the success probabilities for fusion, x and z measurements can be calculated
+
+            first_pass = False
+            out = success_pattern
+
 
     def get_probabilitites(self):
         # For each possible output qubit in the results list, find the probability of the fusion being implemented
         # The pauli measurements required to get to this qubit are then summed over to find the probability of this strategy
 
-
         pass
 
-    def strategy_picker(self):
+    def strategy_picker_new(self):
+        """
+        Do the MWE here, just take lowest weight measurements
+        TODO add sophistication to the picking method
+        :return:
+        """
+        if not self.strategies_remaining:
+            # Look at the measurements for x or z basis measurements
+            if self.p_log_remaining[0]:
+                strats = deepcopy(self.p_log_remaining[0])
+            elif self.p_log_remaining[1]:
+                strats = deepcopy(self.p_log_remaining[1])
+            else:
+                strats = []
+                self.decoding_finished()
+                return
+        else:
+            strats = deepcopy(self.strategies_remaining)
+
+        n_code_q = self.nq - 1
+        lowest_uncorrectable = n_code_q
+        lowest_weight = n_code_q
+        current_winner = strats[0]
+        for s in strats[1:]:
+            new_winner = False
+            weight = s.pauli.weight()
+            if weight < lowest_weight:
+                new_winner = True
+
+            if new_winner:
+                lowest_weight = weight
+                current_winner = s
+        return current_winner
+
+def strategy_picker(self):
 
         """
         We want a combination of the measurement with the smallest support and the largest number of compatible measurements
@@ -364,6 +571,7 @@ class AdaptiveFusionDecoder:
         also want the patterns you switch to to satisfy these criteria - can do this to varying depth for more/less accurate
         decoding
         TODO Calculate a score for each potential next measurement pattern to see how good it would be - do this to varying depths to have faster/slower and less/more accurate decoding for each potential measurement
+        TODO This whole function needs to be re-written to be compatible with the adaptive fusion decoder.
         """
         current_winner = self.strategies_remaining[0]
         # print([a.pauli.to_str() for a in self.strategies_remaining])
@@ -460,8 +668,14 @@ def test_new_decoding():
 
 
 def main():
-    test_new_decoding()
+    testing_adaptive_fusion_decoding()
     exit()
+
+
+def testing_adaptive_fusion_decoding():
+    g = gen_ring_graph(3)
+    dec = AdaptiveFusionDecoder(g)
+    dec.build_tree(printing=True)
 
 
 if __name__=='__main__':
