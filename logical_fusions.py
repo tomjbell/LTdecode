@@ -152,11 +152,6 @@ class FusionDecoder:
 
             threshold = bisection_search([0.95, 1], func_to_optimise)
             return threshold, max_w
-
-            # for t in transmissions:
-            #     pf, px, pz = self.get_probs_from_outcomes(t, pfail, max_w)
-            #     if 0.5 * (px + pz) > pthresh:
-            #         return t, max_w
         return 1, None
 
     def plot_threshold(self, n_points=7, pthresh=0.88, optimal=False, n_steps_sweep=50, show=True):
@@ -235,6 +230,7 @@ class AdaptiveFusionDecoder:
         self.stab_grp_t, self.stab_grp_nt = gen_stabs_from_generators(stab_generators, split_triviality=True)
         self.q_lost = []
         self.fusion_failures = {'x':[], 'z': []}
+        self.fusion_losses = []
         self.failure_q = None
         self.qubit_to_fuse = None
         self.fused_qubits = []
@@ -248,7 +244,7 @@ class AdaptiveFusionDecoder:
         self.fusion_complete = False
         self.xlog_measured = False
         self.zlog_measured = False
-        self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fusion': 0, 'ffx': 0, 'ffz': 0}
+        self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fusion': 0, 'ffx': 0, 'ffz': 0, 'floss':0}
         self.current_target = None
         self.strat = None
         self.target_pauli = None
@@ -256,16 +252,18 @@ class AdaptiveFusionDecoder:
         self.successful_outcomes = {'fusion': [], 'xrec': [], 'zrec': []}
         self.status_dict = {}
         self.finished = False
-        self.depth = 0  #TODO artifact of other decoder, remove when possible
+        self.results = []
+        self.results_dicts = {}
 
     def set_params(self, successes, first_pass=False):
         if first_pass:
             self.fusion_complete = False
             self.xlog_measured = False
             self.zlog_measured = False
-            self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fusion': 0, 'ffx': 0, 'ffz': 0}
+            self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fusion': 0, 'ffx': 0, 'ffz': 0, 'floss': 0}
             self.q_lost = []
             self.fusion_failures = {'x': [], 'z': []}
+            self.fusion_losses = []
             self.fused_qubits = []
             self.pauli_done = Pauli([], [], self.nq, 0)
             self.failure_q = None
@@ -273,7 +271,7 @@ class AdaptiveFusionDecoder:
             self.finished = False
         else:
             self.strategies_remaining, self.p_log_remaining, self.strat, self.current_target, self.q_lost, self.fusion_complete, \
-            self.xlog_measured, self.zlog_measured, self.fused_qubits, self.fusion_failures, self.pauli_done, \
+            self.xlog_measured, self.zlog_measured, self.fused_qubits, self.fusion_failures, self.fusion_losses, self.pauli_done, \
             self.target_measured, self.counter, self.failure_q, self.qubit_to_fuse, self.finished = deepcopy(self.status_dict[tuple(successes)])
             self.success_pattern = successes.copy()
             self.target_pauli = self.strat.pauli
@@ -309,13 +307,22 @@ class AdaptiveFusionDecoder:
                     else:
                         self.success_pattern.append(0)
                         self.q_lost.append(self.current_target)
+                        self.counter['floss'] += 1
+                        self.fusion_losses.append(self.current_target)
+                    self.update_available_strats()
+                    self.finished = self.decoding_finished()
+                    if self.finished:
+                        break
+                    self.strat = self.strategy_picker_new()
+                    self.target_pauli = self.strat.pauli
+                    self.current_target = self.strat.t
                     self.cache_status()
 
                 if self.qubit_to_fuse is not None:
                     assert self.failure_q is None
                     good = self.next_meas_outcome(starting_point, mc=mc, p=1-pfail, first_traversal=first_traversal)
                     if good:
-                        self.success_pattern.append(1)  # here a 1 corresponds to measuring in the x basis
+                        self.success_pattern.append(1)  # here a 1 corresponds to successful fusion
                         self.fused_qubits.append(self.qubit_to_fuse)
                         self.counter['fusion'] += 1
                         self.target_measured = True
@@ -325,7 +332,13 @@ class AdaptiveFusionDecoder:
                     self.qubit_to_fuse = None
 
                 self.update_available_strats()
-                self.cache_status()  # TODO Implement the caching if you want this feature (not necessary but should be faster)
+                self.finished = self.decoding_finished()
+                if self.finished:
+                    break
+                self.strat = self.strategy_picker_new()
+                self.target_pauli = self.strat.pauli
+                self.current_target = self.strat.t
+                self.cache_status()
 
                 if self.failure_q is not None:  # decide in which basis the fusion failure qubit is to be measured
                     good = self.next_meas_outcome(starting_point, mc=mc, p=1-w, first_traversal=first_traversal)
@@ -352,13 +365,11 @@ class AdaptiveFusionDecoder:
                 if printing:
                     self.print_status()
 
-
-
-
             # Need to save the measurements done in the pre and post fusion parts of the decoder separately
             # Now we want to try the Pauli measurements
             if not self.finished:
-                self.print_status()
+                if printing:
+                    self.print_status()
                 self.strat = self.strategy_picker_new()
                 self.target_pauli = self.strat.pauli
                 self.current_target = self.strat.t
@@ -380,11 +391,12 @@ class AdaptiveFusionDecoder:
                     self.counter[f'{meas_type}f'] += 1
                 self.update_available_strats()
                 self.finished = self.decoding_finished()
+                self.cache_status()
 
                 if printing:
                     self.print_status()
 
-        return self.fusion_complete, self.xlog_measured, self.zlog_measured, self.success_pattern, self.pauli_done, self.fused_qubits, self.fusion_failures, self.counter
+        return self.fusion_complete, self.xlog_measured, self.zlog_measured, self.success_pattern, self.pauli_done, self.fused_qubits, self.fusion_failures, self.fusion_losses, self.counter
 
                 # do this
                 #4 possible outcomes for an attempted target measurement - need to consider how all of them affect future measurements
@@ -397,13 +409,13 @@ class AdaptiveFusionDecoder:
     def cache_status(self):
         pattern = tuple(np.copy(self.success_pattern))
         if pattern not in self.status_dict.keys():
-            print(f'Caching {pattern}')
+            # print(f'Caching {pattern}')
             s = self.strat.copy()
             self.status_dict[pattern] = (deepcopy(self.strategies_remaining), deepcopy(self.p_log_remaining), s,
                                          self.current_target, deepcopy(self.q_lost), self.fusion_complete,
                                          self.xlog_measured, self.zlog_measured,  deepcopy(self.fused_qubits),
-                                         deepcopy(self.fusion_failures), self.pauli_done.copy(),
-                                         self.target_measured, self.counter,  deepcopy(self.failure_q),
+                                         deepcopy(self.fusion_failures), self.fusion_losses.copy(), self.pauli_done.copy(),
+                                         self.target_measured, deepcopy(self.counter),  deepcopy(self.failure_q),
                                          self.qubit_to_fuse, self.finished)
 
     def decoding_finished(self):
@@ -423,7 +435,11 @@ class AdaptiveFusionDecoder:
                 for x_log in self.p_log_remaining[0]:
                     if self.pauli_done.contains_other(x_log.pauli, exclude=self.fused_qubits):
                         self.xlog_measured = True
-                        assert not self.p_log_remaining[1]  #TODO maybe print here
+                        try:
+                            assert not self.p_log_remaining[1]  #TODO maybe print here
+                        except AssertionError:
+                            self.print_status()
+                            exit()
                         protocol_finished = True
                         break
                 for z_log in self.p_log_remaining[1]:
@@ -440,6 +456,7 @@ class AdaptiveFusionDecoder:
     def update_available_strats(self):
         """
         Update which measurement strategies remain for teleportation and logical x and z measurements.
+        TODO don't remove measurements with different output qubits - could fuse again if required
         :return: None
         """
         strats_xz = [deepcopy(self.p_log_remaining[0]), deepcopy(self.p_log_remaining[1])]
@@ -453,7 +470,7 @@ class AdaptiveFusionDecoder:
     def print_status(self):
         print(f'{self.pauli_done.to_str()=} \n {self.target_pauli.to_str()=} \n {self.current_target=} \n {self.q_lost=} \n '
               f'{self.fused_qubits=} \n {self.fusion_failures=} \n {self.success_pattern=}')
-        print([s.pauli.to_str() for s in self.strategies_remaining])
+        print([(s.pauli.to_str(), s.t) for s in self.strategies_remaining])
         print([s.pauli.to_str() for s in self.p_log_remaining[0]])
         print([s.pauli.to_str() for s in self.p_log_remaining[1]])
         print(f'{self.xlog_measured=}\n{self.zlog_measured=}\n{self.fusion_complete=}')
@@ -496,8 +513,8 @@ class AdaptiveFusionDecoder:
         while 1 in out:
             while out[-1] == 0:  # Trim trailing zeros from prefix, i.e. go up to the lowest point in the tree where there was a successful measurement
                 del out[-1]
-            success, xx_done, zz_done, success_pattern, paulis_done, fusions_done, fusion_failures_recovered,  counter = self.decode(
-                starting_point=out[:-1], first_traversal=first_pass)
+            success, xx_done, zz_done, success_pattern, paulis_done, fusions_done, fusion_failures_recovered, fusion_losses, counter = self.decode(
+                starting_point=out[:-1], first_traversal=first_pass, printing=False)
             if success or xx_done or zz_done:
                 if success:
                     result = 'fusion'
@@ -512,27 +529,73 @@ class AdaptiveFusionDecoder:
                     print(f'{self.fused_qubits=}')
                     print(f'{self.fusion_failures=}')
                     print(f'{self.q_lost=}')
+                    print(f'{self.pauli_done.to_str()=}')
+                    print(f'{self.counter=}')
                     print(f'{self.fusion_complete=}')
                     print(f'{self.xlog_measured=}')
                     print(f'{self.zlog_measured=}')
                     print('\n')
-
+                r = (result, self.fused_qubits, self.q_lost, self.fusion_failures, self.fusion_losses, self.counter, self.success_pattern)
+                self.results.append(r)
                 #TODO save these results somewhere so that the success probabilities for fusion, x and z measurements can be calculated
 
             first_pass = False
             out = success_pattern
+        self.compile_results_dict()
 
+    def compile_results_dict(self):
+        results_dict = {'fusion': {}, 'xrec': {}, 'zrec': {}}
+        print(self.results)
+        for r in self.results:
+            fused = tuple(r[1])
+            fails_x = tuple(r[3]['x'])
+            fails_z = tuple(r[3]['z'])
+            fusion_losses = tuple(r[4])
+            meas_done = r[0]
+            key = (fused, fails_x, fails_z, fusion_losses)
+            if key in results_dict[meas_done]:
+                results_dict[meas_done][key].append(r[5])
+            else:
+                results_dict[meas_done][key] = [r[5]]
+        self.results_dicts = results_dict
+        print(f'{results_dict=}')
 
-    def get_probabilitites(self):
+    def get_probabilitites(self, eta, pfail, w):
         # For each possible output qubit in the results list, find the probability of the fusion being implemented
         # The pauli measurements required to get to this qubit are then summed over to find the probability of this strategy
 
-        pass
+        prob_dict = {'fusion': 0, 'xrec': 0, 'zrec': 0}
+        for m_type in prob_dict.keys():
+            # print(m_type)
+
+            for key, value in self.results_dicts[m_type].items():
+                # Find the probability of the fusion part succeeding
+                fusions, ffx, ffz, losses = key
+                prob_f = ((eta ** (1/pfail)) * (1-pfail)) ** len(fusions) * ((eta ** (1/pfail)) * pfail * (1 - w)) ** len(ffx) * ((eta ** (1/pfail)) * pfail * w) ** len(ffz) * (1 - eta ** (1/pfail)) ** len(losses)
+                # Now find the prob of the Pauli part succeeding
+                pp = 0
+                for item in value:
+                    nx = item['x']
+                    ny = item['y']
+                    nz = item['z']
+                    nxf = item['xf']
+                    nyf = item['yf']
+                    nzf = item['zf']
+                    pp += eta ** (nx + ny + nz) * (1-eta) ** (nxf + nyf + nzf)
+                tot_prob = prob_f * (pp ** 2)
+                # print(tot_prob, prob_f, pp, ffx, ffz, fusions, losses, value)
+                prob_dict[m_type] += tot_prob
+                if m_type == 'fusion':
+                    prob_dict['xrec'] += tot_prob
+                    prob_dict['zrec'] += tot_prob
+        return prob_dict
 
     def strategy_picker_new(self):
         """
         Do the MWE here, just take lowest weight measurements
+        Want the lowest weight unmeasured thing
         TODO add sophistication to the picking method
+        TODO include the target in the unmeasured weight
         :return:
         """
         if not self.strategies_remaining:
@@ -543,7 +606,7 @@ class AdaptiveFusionDecoder:
                 strats = deepcopy(self.p_log_remaining[1])
             else:
                 strats = []
-                self.decoding_finished()
+                assert self.decoding_finished()
                 return
         else:
             strats = deepcopy(self.strategies_remaining)
@@ -552,84 +615,70 @@ class AdaptiveFusionDecoder:
         lowest_uncorrectable = n_code_q
         lowest_weight = n_code_q
         current_winner = strats[0]
-        for s in strats[1:]:
+        winner_fusion_done = False
+        for s in strats:
             new_winner = False
-            weight = s.pauli.weight()
-            if weight < lowest_weight:
-                new_winner = True
+            unmeasured_weight = len(set(s.pauli.support) - set(self.pauli_done.support))
+
+            # Include the fusion measurement as a required measurement
+            if s.t is not None:
+                fusion_done = s.t in self.fused_qubits
+                if not fusion_done:
+                    unmeasured_weight += 1
+            else:
+                fusion_done = True
+
+            # weight = s.pauli.weight()
+            assert s.pauli.commutes_every(self.pauli_done)
+            if winner_fusion_done and (not fusion_done):
+                pass
+            else:
+                if unmeasured_weight < lowest_weight:
+                    new_winner = True
 
             if new_winner:
-                lowest_weight = weight
+                lowest_weight = unmeasured_weight
+                winner_fusion_done = fusion_done
                 current_winner = s
         return current_winner
 
-def strategy_picker(self):
+    def best_perasure_with_w(self, eta, pfail):
+        ws = np.linspace(0, 1)
+        outs = []
+        for w in ws:
+            outs.append(self.get_probabilitites(eta=eta, pfail=pfail, w=w))
+        avgs = [0.5 * (o['xrec'] + o['zrec']) for o in outs]
+        max_ix = np.argmax(avgs)
+        # print(outs[max_ix], ws[max_ix])
+        return outs[max_ix], ws[max_ix]
 
-        """
-        We want a combination of the measurement with the smallest support and the largest number of compatible measurements
-        want to ensure that as many qubits as possible in the pattern can be lost, and we can still switch to something else
-        also want the patterns you switch to to satisfy these criteria - can do this to varying depth for more/less accurate
-        decoding
-        TODO Calculate a score for each potential next measurement pattern to see how good it would be - do this to varying depths to have faster/slower and less/more accurate decoding for each potential measurement
-        TODO This whole function needs to be re-written to be compatible with the adaptive fusion decoder.
-        """
-        current_winner = self.strategies_remaining[0]
-        # print([a.pauli.to_str() for a in self.strategies_remaining])
-        # print(f'{current_winner.pauli.to_str()=}')
-        num_q = self.nq
-        lowest_uncorrectable = num_q
-        lowest_weight = num_q
-        lowest_av_weight_correction = num_q
-        lowest_non_z = num_q
-        for s in self.strategies_remaining:
-            nu_winner = False
-            # print(s.pauli.to_str())
-            # print(f'{lowest_uncorrectable=}')
-            weight = len(s.pauli.support)
-            num_not_z = sum(s.pauli.xs)
-            num_not_tolerant = 0
-            if s.t == self.current_target or self.current_target is None:
-                if self.depth == 0 and weight > lowest_weight:
-                    pass
-                else:
-                    # Find the number of qubits whose loss cannot be tolerated, and the average weight of these measurements
-                    tot_weight_corr = 0
-                    sub_strats = self.update_available_strats(arb_meas=[s.t])
+    def get_threshold(self, pfail=0.5, pthresh=0.88, w=None):
+        if w is None:
+            max_av, max_w = self.best_perasure_with_w(0.96, pfail)
+        else:
+            max_w = w
+        print(max_w)
 
-                    for q in s.to_measure(self.q_lost, self.pauli_done,
-                                          None):  # For each qubit that could be lost, are we tolerant?
-                        sub_sub_strats = self.update_available_strats(lost=[q], strats=sub_strats)
-                        # print(f'{q=}, {[s.pauli.to_str() for s in sub_sub_strats]}')
-                        if len(sub_sub_strats) == 0:
-                            num_not_tolerant += 1
-                        elif self.depth == 1:
-                            min_weight_corr = min([len(s.pauli.support) for s in sub_sub_strats])
-                            tot_weight_corr += min_weight_corr
-                    av_weight_corr = tot_weight_corr / (weight - num_not_tolerant) if num_not_tolerant != weight else 0
-                    # print(num_not_tolerant, av_weight_corr)
-                    if num_not_tolerant < lowest_uncorrectable:
-                        nu_winner = True
-                    elif num_not_tolerant == lowest_uncorrectable:
-                        if weight < lowest_weight:
-                            nu_winner = True
-                        elif weight == lowest_weight:
-                            if av_weight_corr <= lowest_av_weight_correction:
-                                if self.prefer_z:
-                                    if num_not_z <= lowest_non_z:
-                                        nu_winner = True
-                                else:
-                                    nu_winner = True
-                    if nu_winner:
-                        current_winner = s
-                        lowest_weight = len(s.pauli.support)
-                        lowest_uncorrectable = num_not_tolerant
-                        lowest_av_weight_correction = av_weight_corr
-                        lowest_non_z = num_not_z
-        return current_winner
+        def func_to_optimise(t):
+            probs = self.get_probabilitites(t, pfail, max_w)
+            return 0.5 * (probs['xrec'] + probs['zrec']) - pthresh
 
+        try:
+            threshold = bisection_search([0.9, 1], func_to_optimise)
+        except ValueError:
+            threshold = 1
+        # print(1-threshold)
+        return threshold  #TODO also get w_max??
 
-
-
+    def plot_threshold(self, n_points=27, pthresh=0.88, show=True, w=None):
+        pfails = np.linspace(0.001, 0.5, n_points)
+        data = [1-self.get_threshold(p, pthresh=pthresh, w=w) for p in pfails]
+        # print(data)
+        plt.plot(pfails, data, '--')
+        if show:
+            plt.xlabel('pfail')
+            plt.ylabel('loss threshold')
+            plt.show()
 
 def best_graphs_func(n):
     g = nx.Graph()
@@ -673,9 +722,17 @@ def main():
 
 
 def testing_adaptive_fusion_decoding():
-    g = gen_ring_graph(3)
+    g = gen_ring_graph(5)
+    g = best_graphs_func(9)
+    draw_graph(g)
     dec = AdaptiveFusionDecoder(g)
-    dec.build_tree(printing=True)
+    dec.build_tree(printing=False)
+    # dec.plot_threshold(w=1., show=False)
+    # dec.plot_threshold(w=0.5, show=False)
+    # dec.plot_threshold(w=0., show=False)
+    dec.plot_threshold()
+
+    print(dec.get_probabilitites(.95, 0.25, 0.))
 
 
 if __name__=='__main__':
