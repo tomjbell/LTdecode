@@ -4,22 +4,24 @@ import sys
 import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
-from cascaded import AnalyticCascadedResult
-# from CodesFunctions.decode_success_funcs import plot_best_trees, tot_q
+from cascaded import AnalyticCascadedResult, ConcatenatedResultDicts, FastResult
 from decoder_class import CascadeDecoder
-from graphs import gen_linear_graph, gen_ring_graph, gen_star_graph
-from helpers import load_obj
+from graphs import gen_linear_graph, gen_ring_graph, gen_star_graph, draw_graph
+from helpers import load_obj, save_obj, bisection_search
 from random import randrange, choice, random
 from time import time
 from itertools import combinations, groupby
 
 
-def tot_q(concat):
+def tot_q(concat, type='cascaded'):
     """For a given concatenation, find the total number of required qubits"""
     layer_tots = [1]
     for x in concat:
         layer_tots.append(layer_tots[-1] * (x-1))
-    return sum(layer_tots)
+    if type == 'cascaded':
+        return sum(layer_tots)
+    elif type == 'concatenated':
+        return 1 + layer_tots[-1]
 
 
 def fit_best_trees(capture, deg, max_x=None):
@@ -47,7 +49,7 @@ def plot_best_trees(capture):
     for i in os.listdir(path_to_data):
         if os.path.isfile(os.path.join(path_to_data, i)) and i.startswith(f"TreeGraph_LTvsQubitNum_random_t{capture}_MaxLayers"):
             tree_data = np.loadtxt(open(os.path.join(path_to_data, i), "rb"), delimiter=",")
-            plt.plot(tree_data[0, :], tree_data[1, :], '--')
+            plt.plot(tree_data[0, :], tree_data[1, :], 's-')
 
 
 def test_random_graphs(n, n_samples=4):
@@ -138,7 +140,7 @@ def import_graphs(n_q, plot=False, equiv='Ci'):
                 plt.show()
 
 
-def graph_performance(n, lc_equiv=False, save_perf_dicts=False, mp=False):
+def graph_performance(n, lc_equiv=False, save_perf_dicts=False, mp=False, cascading=True, permute_input=False):
     from helpers import load_obj, save_obj
     path = os.getcwd() + '/LC_equiv_graph_data'
 
@@ -148,7 +150,7 @@ def graph_performance(n, lc_equiv=False, save_perf_dicts=False, mp=False):
         g.add_edges_from(([(0, 1)]))
         x = CascadeDecoder(g)
         bases = ['spc', 'x', 'y', 'z', 'xy']
-        spc, xr, yr, zr, xyr = [x.get_dict(basis=b) for b in bases]
+        spc, xr, yr, zr, xyr = [x.get_dict(basis=b, cascading=cascading) for b in bases]
         results = []
         res = []
         res.append(g.edges)
@@ -168,19 +170,13 @@ def graph_performance(n, lc_equiv=False, save_perf_dicts=False, mp=False):
         for lc_class in graph_data:
             print(f'inspecting graph {c}/{n_classes}, number of qubits = {n}')
             c += 1
-            res = []
             edge_list = lc_class[0]  # Just choose the first graph
-            res.append(edge_list)
-            g = nx.Graph()
-            g.add_nodes_from([i for i in range(n)])
-            g.add_edges_from(edge_list)
-
-            x = CascadeDecoder(g)
-            bases = ['spc', 'x', 'y', 'z', 'xy']
-            spc, xr, yr, zr, xyr = [x.get_dict(basis=b) for b in bases]
-            for mr in spc, xr, yr, zr, xyr:
-                res.append(mr)
-            results.append(res)
+            if permute_input:
+                for in_ix in range(n):
+                    edges_permuted = permute_input_qubit(edge_list, in_ix)
+                    results.append(analyse_graph(edges_permuted, n))
+            else:
+                results.append(analyse_graph(edge_list, n))
         if save_perf_dicts:
             save_obj(results, f'{n}QubitResultDicts', path)
         return results
@@ -207,7 +203,70 @@ def graph_performance(n, lc_equiv=False, save_perf_dicts=False, mp=False):
         print(t1-t0)
         if save_perf_dicts:
             save_obj(results, f'{n}QubitResultDicts_incl_equiv', path)
-        return results, t1-t0
+        return results
+
+
+def analyse_graph(edges, n):
+    g = nx.Graph()
+    g.add_nodes_from(list(range(n)))
+    g.add_edges_from(edges)
+
+    x = CascadeDecoder(g)
+    bases = ['spc', 'x', 'y', 'z', 'xy']
+    spc, xr, yr, zr, xyr = [x.get_dict(basis=b) for b in bases]
+    return edges, spc, xr, yr, zr, xyr
+
+
+def gen_non_isomorphic_graphs(edge_list_in):
+    """
+    From a graph represented by the edge_list_in, return the set of graphs that are inequivalent under permutation of the code (non-input) qubits
+    :param edge_list_in:
+    :return: list of edge_lists of the unique graphs
+    """
+    g = nx.Graph()
+    n = max([i for j in edge_list_in for i in j]) + 1
+    g.add_nodes_from(list(range(n)))
+    g.add_edges_from(edge_list_in)
+
+    # Give the graph edge attributes
+    input = {0: 1}
+    for node in range(1, n):
+        input[node] = 0
+    nx.set_node_attributes(g, input, "is_input")
+
+    unique_graphs_list = [g]
+    nm = nx.isomorphism.categorical_node_match("is_input", 0)
+    for ix in range(1, n):
+        g2 = nx.Graph()
+        g2.add_nodes_from(list(range(n)))
+        input = {0: 1}
+        for node in range(1, n):
+            input[node] = 0
+        nx.set_node_attributes(g2, input, "is_input")
+        es = permute_input_qubit(list(g.edges), ix)
+        g2.add_edges_from(es)
+        new = True
+        for g1 in unique_graphs_list:
+            if nx.isomorphism.is_isomorphic(g1, g2, node_match=nm):
+                new = False
+        if new:
+            unique_graphs_list.append(g2)
+    return [x.edges for x in unique_graphs_list]
+
+
+def permute_input_qubit(edge_list, in_ix):
+    if in_ix == 0:
+        return edge_list
+    else:
+        def new_ix(ix):
+            if ix != in_ix and ix != 0:
+                return ix
+            elif ix == in_ix:
+                return 0
+            elif ix == 0:
+                return in_ix
+        edge_list_permuted = [(new_ix(e[0]), new_ix(e[1])) for e in edge_list]
+        return edge_list_permuted
 
 
 def inspect_class(lc_class, n):
@@ -217,19 +276,9 @@ def inspect_class(lc_class, n):
     for graph in lc_class:
         print(f'inspecting graph {c}/{class_size}')
         c += 1
-        res = []
-        edge_list = graph
-        res.append(edge_list)
-        g = nx.Graph()
-        g.add_nodes_from([i for i in range(n)])
-        g.add_edges_from(edge_list)
-        x = CascadeDecoder(g)
-        bases = ['spc', 'x', 'y', 'z', 'xy']
-        spc, xr, yr, zr, xyr = [x.get_dict(basis=b) for b in bases]
-        for mr in spc, xr, yr, zr, xyr:
-            res.append(mr)
-        result.append(res)
+        result.append(analyse_graph(graph, n))
     return result
+
 
 def plotting(n):
     from helpers import load_obj
@@ -254,7 +303,7 @@ def plotting(n):
     plt.show()
 
 
-def get_best_perf(min_q, max_q, eta):
+def get_best_perf(min_q, max_q, eta, find_threshold=False):
     """
     Find the best spc graphs for the top layer.
     Becasue we are only looking at one layer only consider one representative graph from each class
@@ -263,22 +312,51 @@ def get_best_perf(min_q, max_q, eta):
     path = os.getcwd() + '/LC_equiv_graph_data'
     best_graphs_dict = {}
     for n in range(min_q, max_q + 1):
-        list_of_dicts = load_obj(f'{n}QubitResultDicts', path)
-        best_spc = None
+        if n > 9:
+            path = os.getcwd() + '/graph_perf_10q'
+            name = f'{n}QubitResultsDicts_PermuteInputFastDecoder_batch0'
+        else:
+            name = f'{n}QubitResultsDicts_PermuteInput'
+        list_of_dicts = load_obj(name, path)
+        print(len(list_of_dicts), len(list_of_dicts[0]))
+        best_spc_graph = None
         max_spc = 0
-        for graph in list_of_dicts:
-            edges, spcr, xr, yr, zr, xyr = graph
-            r = AnalyticCascadedResult(spcr, xr, yr, zr, xyr)
-            spc = r.get_spc_prob(eta, 1)
-            if spc > max_spc:
-                best_spc = graph
-                max_spc = spc
-        best_graphs_dict[n] = graph
+        min_threshold = 1
+        for sublist in list_of_dicts:
+            for graph in sublist:
+                if n > 9:
+                    edges, spcr = graph
+                    r = FastResult(spcr)
+                else:
+                    edges, spcr, xr, yr, zr, xyr = graph
+                    r = AnalyticCascadedResult([[spcr, xr, yr, zr, xyr]])
+                if find_threshold:
+                    def func(t):
+                        return r.get_spc_prob(t) - t
+                    try:
+                        thresh = bisection_search((0.5, 0.9), func)
+                    except ValueError:
+                        # print('NO ROOT')
+                        thresh = 1
+                    if thresh <= min_threshold:
+                        min_threshold = thresh
+                        best_spc_graph = graph
+                else:
+                    spc = r.get_spc_prob(eta)
+                    if spc > max_spc:
+                        best_spc_graph = graph
+                        max_spc = spc
+        if find_threshold:
+            best_graphs_dict[n] = min_threshold, best_spc_graph
+            print(f'{min_threshold=}')
+
+        else:
+            best_graphs_dict[n] = max_spc, best_spc_graph
     return best_graphs_dict
 
 
 def gen_data_points(n_samples=100, t=0.9, min_q=3, max_q=9, max_depth=4, biased=False, trees_only=False, lc_equiv=False,
-                    best_top_layer_only=True, only_winning_graphs=True):
+                    best_top_layer_only=True, only_winning_graphs=True, concatenated=False):
     if best_top_layer_only:
         bests = get_best_perf(min_q, max_q, eta=t)
     if only_winning_graphs:
@@ -307,7 +385,7 @@ def gen_data_points(n_samples=100, t=0.9, min_q=3, max_q=9, max_depth=4, biased=
             ixs = list(np.random.choice(len(scaled), size=max_depth, replace=True, p=scaled))
             q_num_list = [min_q + ix for ix in ixs]
         else:
-            q_num_list = [randrange(min_q, max_q) for _ in range(max_depth)]
+            q_num_list = [randrange(min_q, max_q+1) for _ in range(max_depth)]
 
         # Pick random graphs of each qubit number
         if trees_only and not best_top_layer_only:
@@ -320,18 +398,29 @@ def gen_data_points(n_samples=100, t=0.9, min_q=3, max_q=9, max_depth=4, biased=
         else:
             graph_dict_lists = [n_qubit_lists[q][randrange(0, len(n_qubit_lists[q]))][1:] for q in q_num_list]
 
-
         n_extra_layers = [i for i in range(max_depth)]
-        r = AnalyticCascadedResult(graph_dict_lists)
-        layer_y = []
-        for d in n_extra_layers:
-            eff_loss = 1 - r.get_spc_prob(t, depth=d + 1)
-            nq = tot_q(q_num_list[:d+1])
-            if not only_winning_graphs or eff_loss < fit_func(nq):
-                x.append(nq)
-                y.append(eff_loss)
-                if q_num_list[:d+1] not in best_graphs:
-                    best_graphs.append(q_num_list[:d+1])
+        if concatenated:
+            for d in n_extra_layers:
+                r = ConcatenatedResultDicts(graph_dict_lists, cascade_ix=list(range(d+1)))
+                eff_loss = 1 - r.teleportation_prob(t)
+                nq = tot_q(q_num_list[:d+1], type='concatenated')
+                if not only_winning_graphs or eff_loss < fit_func(nq):
+                    x.append(nq)
+                    y.append(eff_loss)
+                    if q_num_list[:d+1] not in best_graphs:
+                        best_graphs.append(q_num_list[:d+1])
+
+        else:
+            r = AnalyticCascadedResult(graph_dict_lists)
+            layer_y = []
+            for d in n_extra_layers:
+                eff_loss = 1 - r.get_spc_prob(t, depth=d + 1)
+                nq = tot_q(q_num_list[:d+1])
+                if not only_winning_graphs or eff_loss < fit_func(nq):
+                    x.append(nq)
+                    y.append(eff_loss)
+                    if q_num_list[:d+1] not in best_graphs:
+                        best_graphs.append(q_num_list[:d+1])
 
     plot_best_trees(t)
     plt.plot(x, y, '+')
@@ -339,8 +428,14 @@ def gen_data_points(n_samples=100, t=0.9, min_q=3, max_q=9, max_depth=4, biased=
     plt.yscale('log')
     plt.xlabel('Number of qubits')
     plt.ylabel('Effective loss')
+    plt.xlim(1.9, 1000)
+    plt.ylim(1e-11, 1-t + 0.01)
+    plt.plot((0, 10000), (1-t, 1-t), 'k--')
+    plt.title(r'$\eta$ = ' + str(t))
+    plt.savefig('Concatenated_vs_trees')
     plt.show()
     print(best_graphs)
+    print(set(y))
 
 
 def testing_trees(n_samples=100, t=0.9, min_q=2, max_q=10, max_depth=6, enforce_pattern=False):
@@ -384,6 +479,7 @@ def testing_trees(n_samples=100, t=0.9, min_q=2, max_q=10, max_depth=6, enforce_
     plt.ylabel('Effective loss')
     plt.show()
 
+
 def get_fit_func(eta):
     """
     Get an expression for the best trees curve so you can look at only the graphs that win
@@ -400,78 +496,108 @@ def get_fit_func(eta):
     return fit_func
 
 
+def txt_to_edge_data(filename):
+    """
+    Read the files taken from http://www.ii.uib.no/~larsed/entanglement/ and return a list of the edges of graphs
+    :param filename:
+    :return:
+    """
+    output = []
+    with open(filename) as f:
+        lines = f.readlines()
+    for line in lines:
+        x = line.split('\t')
+        # for a in x:
+        #     print(a)
+        n_graphs = int(x[1])
+        schmidt = x[5]
+        edge_list_ix = 10
+        for ix in range(len(x)):
+            if x[ix] == 'yes' or x[ix] == 'no':
+                edge_list_ix = ix + 1
+
+        edge_list = x[edge_list_ix]
+        y = edge_list.split(')')
+        edges = [(int(e[1+4*j]), int(e[3+4*j])) for e in y for j in range(len(e)//4)]
+        # print(edges)
+        output.append(edges)
+    return output
+
+
+
+
 def main():
-
-    # for n in [8]:
-    #     r, t = graph_performance(n, lc_equiv=True, save_perf_dicts=True, mp=True)
-    # exit()
-    # exit()
-    # from helpers import load_obj, save_obj
-    # path = os.getcwd() + '/LC_equiv_graph_data'
-    #
-    # # Get 3 qubit graph performance
-    # ring3 = gen_ring_graph(3)
-    # lin3 = gen_linear_graph(3)
-    # print(ring3.edges)
-    # # exit()
-    # from decoder_class import CascadeDecoder
-    # q3res = []
-    # for graph in (ring3, lin3):
-    #     r_list = [ring3.edges]
-    #     x = CascadeDecoder(graph)
-    #     for b in ['spc', 'x', 'y', 'z', 'xy']:
-    #         r_list.append(x.get_dict(basis=b))
-    #     q3res.append(r_list)
-    # save_obj(q3res, '3QubitResultDicts', path)
-    # exit()
-
-    from time import time
-
     # gen_data_points(1000, 0.9, biased=False, trees_only=False, max_q=9, best_top_layer_only=True)
-    gen_data_points(1000, 0.95, biased=False, trees_only=False, max_q=9, best_top_layer_only=False, max_depth=4)
+    gen_data_points(50000, 0.9, biased=False, min_q=3, trees_only=False, max_q=11, best_top_layer_only=False, max_depth=5, concatenated=True)
     print('exiting')
     exit()
-
-
-
     # plotting(7)
 
 
 if __name__ == '__main__':
-    main()
-    n = 5
-    g = gen_ring_graph(n)
-    nx.draw(g)
-    plt.show()
-    x = CascadeDecoder(g)
-    # xy_dict = x.get_dict('xy')
-    # print(xy_dict)
+    # Look at 10 qubit performance
+
+    bests = get_best_perf(4, 10, 0.99)
+    for n in range(4, 11):
+        print(bests[n][0])
+
+    exit()
     #
-    #
+    # g = gen_linear_graph(6)
+    # g2 = nx.Graph()
+    # g2.add_nodes_from(list(range(6)))
+    # g2.add_edges_from(permute_input_qubit(list(g.edges()), 4))
+    # draw_graph(g)
+    # draw_graph(g2)
     # exit()
-    dicts = [x.get_dict(b) for b in ('spc', 'x', 'y', 'z', 'xy')]
-    # print(dicts[1])
-    # print(dicts[2])
-    # print(dicts[4])
-    print('got dictionaries')
-    r = AnalyticCascadedResult([dicts], [0] * 5)
     etas = np.linspace(0, 1)
-    for depth in range(1, 6):
-        plt.plot(etas, [r.get_spc_prob(t, depth) for t in etas])
-    plt.plot(etas, etas, 'k--')
-    plt.legend([1, 2, 3, 4, 5])
-    plt.xlabel('Physical transmission probability')
-    plt.ylabel('Teleportation success rate')
-    plt.title(f'Cascaded {n} qubit ring')
-    plt.show()
+
+    bests = get_best_perf(4, 9, 0.99, find_threshold=False)
+    performance = []
+    for g in bests.values():
+        print(g[0])
+        graph = nx.Graph()
+        graph.add_nodes_from(list(range(max([i for j in g[1][0] for i in j]))))
+        graph.add_edges_from(g[1][0])
+        draw_graph(graph)
+        print(g[1])
+        edges, spcr, xr, yr, zr, xyr = g[1]
+        r = AnalyticCascadedResult([[spcr, xr, yr, zr, xyr]])
+
+        data = [r.get_spc_prob(eta, 1) for eta in etas]
+        performance.append((g[1][0], etas, data))
+        plt.plot(etas, data)
+        plt.plot(etas, etas)
+        plt.show()
+
+    # save_obj(performance, 'best_graphs_data_n=4_9_threshold_full', os.getcwd())
+
+    exit()
+
+    results6q = graph_performance(6, lc_equiv=False, permute_input=True)
+    etas = np.linspace(0, 1)
+    eta = 0.9
+    # best_graphs = get_best_perf(8, 9, 0.9)
+    best_spc_graph = None
+    max_spc = 0
+    for data in results6q:
+        g = nx.Graph()
+        g.add_edges_from(data[0])
+        # draw_graph(g)
+        edges, spcr, xr, yr, zr, xyr = data
+
+        r = AnalyticCascadedResult([[spcr, xr, yr, zr, xyr]])
+        spc = r.get_spc_prob(eta, 1)
+        if spc > max_spc:
+            best_spc_graph = data
+            max_spc = spc
+    g = nx.Graph()
+
+    g.add_edges_from(best_spc_graph[0])
+    draw_graph(g)
+    print(max_spc)
+
+
     exit()
 
 
-    # main()
-    # testing_trees(1, 0.9, max_q=3, min_q=3, max_depth=13)
-    # # for n in [2]:
-    # #     graph_performance(n, save_perf_dicts=True)
-    # exit()
-    test_random_graphs(10, n_samples=2)
-    exit()
-    main()
