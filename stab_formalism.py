@@ -1,4 +1,4 @@
-from itertools import combinations
+from itertools import combinations, product
 from pauli_class import Pauli, Strategy
 
 
@@ -120,69 +120,106 @@ def stabilizers_from_graph(g):
     return stab_gens
 
 
-def get_measurements(stab_grp, t, get_individuals=False):
+def get_measurements(stab_grp, t, get_individuals=False, new_implementation=False):
     """
     Find the set of possible measurements that will teleport the state from the input qubit (canonically zero) to the
     target output t
     """
-    # reduce to the stabilizers that are non-identity on input and output
-    stab_grp_reduced = [s for s in stab_grp if (s.zs[0] or s.xs[0]) and (s.zs[t] or s.xs[t])]
-    n_stab_reduced = len(stab_grp_reduced)
     num_q = stab_grp[0].n
-    stab_pairs = []
-    for i, j in combinations([i for i in range(len(stab_grp_reduced))], 2):
-        commuting_ix = [i for i in range(1, num_q)]
-        commuting_ix.remove(t)
-        if stab_grp_reduced[i].commutes_each(stab_grp_reduced[j], commuting_ix) and not (stab_grp_reduced[i].commutes_each(stab_grp_reduced[j], [t]) or stab_grp_reduced[i].commutes_each(stab_grp_reduced[j], [0])):
-            stab_pairs.append((i, j))
+    commuting_ix = [i for i in range(1, num_q)]
+    commuting_ix.remove(t)
 
-    measurements = []
-    if get_individuals:
-        # Record both of the individual stabilizers and the union of them
-        for pair in stab_pairs:
-            op3 = stab_grp_reduced[pair[0]].copy()
-            op4 = stab_grp_reduced[pair[1]].copy()
+    if new_implementation:
+        bases = [p for p in product(('x', 'y', 'z'), repeat=2)]
 
-              # Set the operators on the input and output qubits to identity
-            for q in (0, t):
-                op3.update_zs(q, 0)
-                op3.update_xs(q, 0)
-                op4.update_zs(q, 0)
-                op4.update_xs(q, 0)
-            a = op3.union(op4)
-            measurements.append([op3, op4, a])
 
-        m_dict = {tuple(m[2].xz_mat.flatten()): m for m in measurements}
-        unique_meas = [value for value in m_dict.values()]
-        strats = [Strategy(m[2], t, m[0], m[1]) for m in unique_meas]
-        return strats
+        def get_other_bases(b):
+            return [b2 for b2 in bases if b2[0] != b[0] and b2[1] != b[1] and b < b2]
 
-    else:
-        # Now take the union of those two operators to give the possible measurement patterns
-        for pair in stab_pairs:
-            op1 = stab_grp_reduced[pair[0]]
-            op2 = stab_grp_reduced[pair[1]]
-            z_meas = [i for i in range(1, num_q) if op1.zs[i] == 1 or op2.zs[i] == 1]
-            x_meas = [i for i in range(1, num_q) if op1.xs[i] == 1 or op2.xs[i] == 1]
-            z_meas.remove(t)
-            x_meas.remove(t)
+        #Split in to x y z type and compare with stabilizers of the other types?
+        # stab_pairs_new = []
+        measurements = []
+        m_type_dict = {b: [] for b in bases}
+        for s in stab_grp:
+            if (s.zs[0] or s.xs[0]) and (s.zs[t] or s.xs[t]):
+                m_type_dict[(s.get_meas_type(0), s.get_meas_type(t))].append(s)
+        for k1 in m_type_dict.keys():
+            for k2 in get_other_bases(k1):
+                for s1 in m_type_dict[k1]:
+                    for s2 in m_type_dict[k2]:
+                        if s1.commutes_each(s2, commuting_ix):
+                            # stab_pairs_new.append((s1, s2))
+                            z_meas = [i for i in range(1, num_q) if s1.zs[i] == 1 or s2.zs[i] == 1]
+                            x_meas = [i for i in range(1, num_q) if s1.xs[i] == 1 or s2.xs[i] == 1]
+                            z_meas.remove(t)
+                            x_meas.remove(t)
+                            measurements.append(Pauli(z_meas, x_meas, num_q, 0))
 
-            measurements.append(Pauli(z_meas, x_meas, num_q, 0))
         # Return only unique measurements
         # Alternative unique element finding (FASTER)
         a_dict = {tuple(p.xs + p.zs): p for p in measurements}
         nu_meas = [a_dict[key] for key in a_dict.keys()]
         strats = [Strategy(m, t) for m in nu_meas]
-        print(f'{len(strats)=}')
-
+        strats.sort(key=lambda x: x.pauli.weight(), reverse=False)
         return strats
+    else:
+
+        # reduce to the stabilizers that are non-identity on input and output
+        stab_grp_reduced = [s for s in stab_grp if (s.zs[0] or s.xs[0]) and (s.zs[t] or s.xs[t])]
+        n_stab_reduced = len(stab_grp_reduced)
+        stab_pairs = []
+        for i, j in combinations([i for i in range(len(stab_grp_reduced))], 2):
+            if stab_grp_reduced[i].commutes_each(stab_grp_reduced[j], commuting_ix) and not (stab_grp_reduced[i].commutes_each(stab_grp_reduced[j], [t]) or stab_grp_reduced[i].commutes_each(stab_grp_reduced[j], [0])):
+                stab_pairs.append((i, j))
+
+        measurements = []
+        if get_individuals:
+            # Record both of the individual stabilizers and the union of them
+            for pair in stab_pairs:
+                op3 = stab_grp_reduced[pair[0]].copy()
+                op4 = stab_grp_reduced[pair[1]].copy()
+
+                  # Set the operators on the input and output qubits to identity
+                for q in (0, t):
+                    op3.update_zs(q, 0)
+                    op3.update_xs(q, 0)
+                    op4.update_zs(q, 0)
+                    op4.update_xs(q, 0)
+                a = op3.union(op4)
+                measurements.append([op3, op4, a])
+
+            m_dict = {tuple(m[2].xz_mat.flatten()): m for m in measurements}
+            unique_meas = [value for value in m_dict.values()]
+            strats = [Strategy(m[2], t, m[0], m[1]) for m in unique_meas]
+            return strats
+
+        else:
+            # Now take the union of those two operators to give the possible measurement patterns
+            for pair in stab_pairs:
+                op1 = stab_grp_reduced[pair[0]]
+                op2 = stab_grp_reduced[pair[1]]
+                z_meas = [i for i in range(1, num_q) if op1.zs[i] == 1 or op2.zs[i] == 1]
+                x_meas = [i for i in range(1, num_q) if op1.xs[i] == 1 or op2.xs[i] == 1]
+                z_meas.remove(t)
+                x_meas.remove(t)
+
+                measurements.append(Pauli(z_meas, x_meas, num_q, 0))
+            # Return only unique measurements
+            # Alternative unique element finding (FASTER)
+            a_dict = {tuple(p.xs + p.zs): p for p in measurements}
+            nu_meas = [a_dict[key] for key in a_dict.keys()]
+            strats = [Strategy(m, t) for m in nu_meas]
+            # print(f'{len(strats)=}')
+            strats.sort(key=lambda x: x.pauli.weight(), reverse=False)
+
+            return strats
 
 
 if __name__ == '__main__':
     pass
 
 
-def gen_strats_from_stabs(stabs, n_qubits, targets=None, get_individuals=False):
+def gen_strats_from_stabs(stabs, n_qubits, targets=None, get_individuals=False, new_implementation=True):
     """
     For a networkx graph, use the adjacency list to find the generators of the stabilizer group
     Assuming the input qubit is qubit 0,
@@ -192,7 +229,7 @@ def gen_strats_from_stabs(stabs, n_qubits, targets=None, get_individuals=False):
     if targets is None:
         targets = [i for i in range(1, n_qubits)]
     for out in targets:
-        meas = get_measurements(stabs, out, get_individuals=get_individuals)
+        meas = get_measurements(stabs, out, get_individuals=get_individuals, new_implementation=new_implementation)
         strats += meas
     return strats
 
