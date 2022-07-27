@@ -207,13 +207,19 @@ class Pauli:
             return True
         return False
 
-    def contains_other(self, other):
+    def contains_other(self, other, exclude=None):
         """
         Does this pauli P1 contain another pauli operator P2, such that P1 can be written P1 = P2 tensor P3, where P2
          and P3 have non-overlapping supports
+         Allow for some qubits to be excluded from the comparison, e.g. for logical fusion measurements where we can
+         recover all pauli measurements on the fused qubits
         """
         flag = True
-        for q in other.support:
+        if exclude is not None:
+            qubits_to_compare = list(set(other.support) - set(exclude))
+        else:
+            qubits_to_compare = other.support
+        for q in qubits_to_compare:
             if other.zs[q] != self.zs[q] or other.xs[q] != self.xs[q]:
                 flag = False
                 break
@@ -248,7 +254,7 @@ def multi_union(p_list):
 
 
 class Strategy:
-    def __init__(self, p, t, s1=None, s2=None):
+    def __init__(self, p, t=None, s1=None, s2=None):
         # TODO include an ordering here so that different measurement orders are different strategies - may have different tolerances
         self.pauli = p
         self.t = t
