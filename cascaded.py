@@ -1,6 +1,15 @@
 from helpers import expr_to_prob
 
 
+class FastResult:
+    def __init__(self, spc_dict):
+        self.spc_dict = spc_dict
+
+    def get_spc_prob(self, eta):
+        return sum([self.spc_dict[k] * eta ** sum([k[i] for i in (0, 2, 4, 6)]) *
+                    (1 - eta) ** sum([k[i] for i in (1, 3, 5, 7)]) for k in self.spc_dict.keys()])
+
+
 class AnalyticCascadedResult:
     def __init__(self, concat_of_perf_dicts, cascade_ix=None):
         """
@@ -32,7 +41,7 @@ class AnalyticCascadedResult:
         return succ_prob
 
     def xx(self, n, t):
-        """find the probability of an attempted x measurement of a qubit with n rings below it returning an x
+        """find the probability of an attempted x measurement of a qubit with n graphs below it returning an x
         measurement"""
         if n == 0:
             return t
@@ -69,7 +78,7 @@ class AnalyticCascadedResult:
             func = self.get_func(self.zeffs[self.layer_map(self.max_depth - n)])
             return (1 - t) * func(xx_, zi_, 1 - xx_ - zi_, zz_, zi_, 1 - zz_ - zi_, yy_, zi_, 1 - yy_ - zi_, 0, 0, 0)
 
-    def get_spc_prob(self, t, depth):
+    def get_spc_prob(self, t, depth=1):
         self.max_depth = depth
         xx = self.xx(depth-1, t)
         yy = self.yy(depth-1, t)
@@ -275,7 +284,7 @@ class ConcatenatedResult:
 
 class ConcatenatedResultDicts:
     """
-    For use with the performance data that has alrea
+    For use with the performance data that has already been generated and saved as dictionaries
     """
     def __init__(self, concat_result_dicts, cascade_ix=None, ec=False):
         """ Want results dictionaries in the order spc, x, y, z, xy"""
