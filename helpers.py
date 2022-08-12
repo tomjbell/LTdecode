@@ -1,12 +1,30 @@
 import pickle
 from os import getcwd
 import numpy as np
+from sys import getsizeof
 
 
-# def partial_trace(mat, qubits_to_keep, n):
-#     q = Qobj(mat, dims=[[2]*n, [2]*n])
-#     q2 = q.ptrace(qubits_to_keep)
-#     return np.array(q2)
+def get_size(obj, seen=None):
+    """Recursively finds size of objects"""
+    size = getsizeof(obj)
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    # Important mark as seen *before* entering recursion to gracefully handle
+    # self-referential objects
+    seen.add(obj_id)
+    if isinstance(obj, dict):
+        size += sum([get_size(v, seen) for v in obj.values()])
+        size += sum([get_size(k, seen) for k in obj.keys()])
+    elif hasattr(obj, '__dict__'):
+        size += get_size(obj.__dict__, seen)
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        size += sum([get_size(i, seen) for i in obj])
+    return size
+
+
 def bisection_search(interval, func, depth=10, y0=None, y1=None):
     k0, k1 = interval[0], interval[1]
     mid = 0.5 * (k0 + k1)
