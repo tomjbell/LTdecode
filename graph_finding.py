@@ -5,12 +5,14 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
 from cascaded import AnalyticCascadedResult, ConcatenatedResultDicts, FastResult
-from decoder_class import CascadeDecoder
+from decoder_class import CascadeDecoder, FastDecoder
 from graphs import gen_linear_graph, gen_ring_graph, gen_star_graph, draw_graph
-from helpers import load_obj, save_obj, bisection_search
+from helpers import load_obj, save_obj, bisection_search, get_size
 from random import randrange, choice, random
 from time import time
 from itertools import combinations, groupby
+from multiprocessing import Pool
+import bz2
 
 
 def tot_q(concat, type='cascaded'):
@@ -303,55 +305,54 @@ def plotting(n):
     plt.show()
 
 
-def get_best_perf(min_q, max_q, eta, find_threshold=False):
+def get_best_perf(min_q, max_q, eta=0.99, find_threshold=False):
     """
     Find the best spc graphs for the top layer.
     Becasue we are only looking at one layer only consider one representative graph from each class
     """
-    from helpers import load_obj
-    path = os.getcwd() + '/LC_equiv_graph_data'
     best_graphs_dict = {}
     for n in range(min_q, max_q + 1):
         if n > 9:
-            path = os.getcwd() + '/graph_perf_10q'
-            name = f'{n}QubitResultsDicts_PermuteInputFastDecoder_batch0'
+            path = os.getcwd() + f'/graphs_batched_{n}q'
+            filenames = [f[:-4] for f in os.listdir(f'graphs_batched_{n}q') if f.startswith('graph_performance')]
         else:
-            name = f'{n}QubitResultsDicts_PermuteInput'
-        list_of_dicts = load_obj(name, path)
-        print(len(list_of_dicts), len(list_of_dicts[0]))
-        best_spc_graph = None
-        max_spc = 0
-        min_threshold = 1
-        for sublist in list_of_dicts:
-            for graph in sublist:
-                if n > 9:
-                    edges, spcr = graph
-                    r = FastResult(spcr)
-                else:
-                    edges, spcr, xr, yr, zr, xyr = graph
-                    r = AnalyticCascadedResult([[spcr, xr, yr, zr, xyr]])
-                if find_threshold:
-                    def func(t):
-                        return r.get_spc_prob(t) - t
-                    try:
-                        thresh = bisection_search((0.5, 0.9), func)
-                    except ValueError:
-                        # print('NO ROOT')
-                        thresh = 1
-                    if thresh <= min_threshold:
-                        min_threshold = thresh
-                        best_spc_graph = graph
-                else:
-                    spc = r.get_spc_prob(eta)
-                    if spc > max_spc:
-                        best_spc_graph = graph
-                        max_spc = spc
-        if find_threshold:
-            best_graphs_dict[n] = min_threshold, best_spc_graph
-            print(f'{min_threshold=}')
+            path = os.getcwd() + f'/data/spc_data'
+            filenames = [f"{n}_qubit_performance"]
 
-        else:
-            best_graphs_dict[n] = max_spc, best_spc_graph
+        best_subthresh_graph = None
+        best_threshold_graph = None
+        max_subthresh = 0
+        min_threshold = 1
+
+        ix = 0
+        for file in filenames:
+            list_of_dicts = load_obj(file, path)
+            print(f"Graphs loaded, filesize={get_size(list_of_dicts)}")
+            for graph in list_of_dicts:
+                edges = graph[0]
+                spcr = graph[1]
+                r = FastResult(spcr)
+
+                # Find threshold
+                def func(t):
+                    return r.get_spc_prob(t) - t
+                try:
+                    thresh = bisection_search((0.5, 0.95), func)
+                except ValueError:
+                    # print('NO ROOT')
+                    thresh = 1
+                if thresh <= min_threshold:
+                    min_threshold = thresh
+                    best_threshold_graph = graph
+                # Get subthreshold performance
+                spc = r.get_spc_prob(eta)
+                if spc > max_subthresh:
+                    best_subthresh_graph = graph
+                    max_subthresh = spc
+            print(f'File number #{ix} complete, current bests: {max_subthresh}, {min_threshold}')
+            ix += 1
+        best_graphs_dict[n] = (best_subthresh_graph, max_subthresh, best_threshold_graph, min_threshold)
+        print((best_subthresh_graph, max_subthresh, best_threshold_graph, min_threshold))
     return best_graphs_dict
 
 
@@ -496,6 +497,35 @@ def get_fit_func(eta):
     return fit_func
 
 
+def read_data_from_bz2(line_start, lines_stop, filename, path_to_file):
+    full_path = os.path.join(path_to_file, filename)
+    graphs_to_inspect = []
+    f = bz2.BZ2File(full_path, "r")
+    count = 0
+    for line in f:
+        if count < line_start:
+            pass
+        elif count < lines_stop:
+            line = line.decode('UTF-8')
+            x = line.split('\t')
+            n_graphs = int(x[1])
+            schmidt = x[5]
+            edge_list_ix = 10
+            for ix in range(len(x)):
+                if x[ix] == 'yes' or x[ix] == 'no':
+                    edge_list_ix = ix + 1
+
+            edge_list = x[edge_list_ix]
+            e2 = edge_list.replace(')(', ',').removeprefix('(').removesuffix(')').split(',')
+            e3 = [_.split('-') for _ in e2]
+            e4 = [(int(x[0]), int(x[1])) for x in e3]
+            graphs_to_inspect.append((n_graphs, e4))
+        else:
+            break
+        count += 1
+    return graphs_to_inspect
+
+
 def txt_to_edge_data(filename):
     """
     Read the files taken from http://www.ii.uib.no/~larsed/entanglement/ and return a list of the edges of graphs
@@ -524,8 +554,6 @@ def txt_to_edge_data(filename):
     return output
 
 
-
-
 def main():
     # gen_data_points(1000, 0.9, biased=False, trees_only=False, max_q=9, best_top_layer_only=True)
     gen_data_points(50000, 0.9, biased=False, min_q=3, trees_only=False, max_q=11, best_top_layer_only=False, max_depth=5, concatenated=True)
@@ -534,70 +562,70 @@ def main():
     # plotting(7)
 
 
-if __name__ == '__main__':
-    # Look at 10 qubit performance
-
-    bests = get_best_perf(4, 10, 0.99)
-    for n in range(4, 11):
-        print(bests[n][0])
-
-    exit()
-    #
-    # g = gen_linear_graph(6)
-    # g2 = nx.Graph()
-    # g2.add_nodes_from(list(range(6)))
-    # g2.add_edges_from(permute_input_qubit(list(g.edges()), 4))
-    # draw_graph(g)
-    # draw_graph(g2)
-    # exit()
-    etas = np.linspace(0, 1)
-
-    bests = get_best_perf(4, 9, 0.99, find_threshold=False)
-    performance = []
-    for g in bests.values():
-        print(g[0])
-        graph = nx.Graph()
-        graph.add_nodes_from(list(range(max([i for j in g[1][0] for i in j]))))
-        graph.add_edges_from(g[1][0])
-        draw_graph(graph)
-        print(g[1])
-        edges, spcr, xr, yr, zr, xyr = g[1]
-        r = AnalyticCascadedResult([[spcr, xr, yr, zr, xyr]])
-
-        data = [r.get_spc_prob(eta, 1) for eta in etas]
-        performance.append((g[1][0], etas, data))
-        plt.plot(etas, data)
-        plt.plot(etas, etas)
-        plt.show()
-
-    # save_obj(performance, 'best_graphs_data_n=4_9_threshold_full', os.getcwd())
-
-    exit()
-
-    results6q = graph_performance(6, lc_equiv=False, permute_input=True)
-    etas = np.linspace(0, 1)
-    eta = 0.9
-    # best_graphs = get_best_perf(8, 9, 0.9)
-    best_spc_graph = None
-    max_spc = 0
-    for data in results6q:
-        g = nx.Graph()
-        g.add_edges_from(data[0])
-        # draw_graph(g)
-        edges, spcr, xr, yr, zr, xyr = data
-
-        r = AnalyticCascadedResult([[spcr, xr, yr, zr, xyr]])
-        spc = r.get_spc_prob(eta, 1)
-        if spc > max_spc:
-            best_spc_graph = data
-            max_spc = spc
+def graph_perf_spc_only(graph_info):
+    class_size = graph_info[0]
+    edges = graph_info[1]
     g = nx.Graph()
+    n = max([i for edge in edges for i in edge])
+    g.add_nodes_from(list(range(n)))
+    g.add_edges_from(edges)
+    x = FastDecoder(g)
+    spc = x.get_dict()
+    return edges, spc, class_size
 
-    g.add_edges_from(best_spc_graph[0])
-    draw_graph(g)
-    print(max_spc)
+
+def get_graph_perf_dicts(n, spc_only=True, mp=False):
+    """
+
+    :param path_to_graph_list:
+    :param spc_only:
+    :return:
+    """
+    graph_data = load_obj(f'{n}_qubit_graphs_ordered_num_in_class', path='data/uib_data')
+    if spc_only:
+        if mp:
+            with Pool() as p:
+                data_out = p.map(graph_perf_spc_only, graph_data)
+        else:
+            data_out = [graph_perf_spc_only(g) for g in graph_data]
+
+        save_obj(data_out, f"{n}_qubit_performance", "data/spc_data")
+    else:
+        pass
+
+def scatter_perf_class_size(n, eta=0.99, spc_only=True):
+    data = load_obj(f'{n}_qubit_performance', "data/spc_data")
+    log_loss = []
+    class_sizes = []
+    for item in data:
+        r = FastResult(item[1])
+        log_loss.append(np.log10(1-r.get_spc_prob(eta)))
+        class_sizes.append(item[2])
+    plt.scatter(log_loss, class_sizes)
+    plt.xlabel(f'Logical loss, log scale')
+    plt.ylabel('Class size')
+    plt.title(f"{n} qubits, physical loss {np.round(1-eta, 5)}")
+    plt.show()
 
 
-    exit()
+def get_distance(spcr, plot=True, show_plot=True):
+    low_loss_etas = np.linspace(0.9, 0.9999)
+    r = FastResult(spcr)
+    eta_log = [r.get_spc_prob(t) for t in low_loss_etas]
+    log_x = [np.log(1 - t) for t in low_loss_etas]
+    log_y = [np.log(1 - tl) for tl in eta_log]
+    grad = (log_y[-1] - log_y[0]) / (log_x[-1] - log_x[0])
+    if plot:
+        plt.plot(log_x, log_y)
+    if show_plot:
+        plt.show()
+    return grad
+
+
+if __name__ == '__main__':
+    for n in range(4, 10):
+        scatter_perf_class_size(n)
+
+
 
 
