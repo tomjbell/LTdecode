@@ -2,6 +2,9 @@ from itertools import combinations, product
 from pauli_class import pauli_prod, multi_union
 import numpy as np
 from math import factorial
+from stab_formalism import stabilizers_from_graph, gen_stabs_from_generators, gen_stabs_new
+from networkx import from_numpy_matrix
+from networkx.algorithms.clique import find_cliques as maximal_cliques
 
 
 def cascade_error_correction(targets, checks, p0, meas_accuracies, indirect_z_ixs=None, ignore_qs=None, lost_qubits=None,
@@ -88,8 +91,8 @@ def pauli_error_decoder(targets, checks, ps, max_weight=2, ignore=(0,), lost_qub
     """
     This can take a arbitrary number of target paulis and an arbitrary number of check paulis
     """
-    if not targets:
-        return [no_ec_flip_rate([len(t.support) for t in targets], p) for p in ps], None
+    if not checks:
+        return [1 - no_ec_flip_rate([len(t.support) for t in targets], p) for p in ps], None
     if lost_qubits is None:
         lost_qubits = []
     # Initialise variables that we will need, and data structures for storing the results
@@ -212,10 +215,9 @@ def best_checks(graph, target, banned_qs=None, printing=False, stab_nt=None, spc
         print(target.to_str())
     # find compatible stabilizers
     if stab_nt is None:
-        from stab_formalism import stabilizers_from_graph, gen_stabs_from_generators
         gens = stabilizers_from_graph(graph)
         # We are only interested in the non-trivial stabilizers - trivial stabilizers with non-overlapping supports give us no new info
-        stab_t, stab_nt = gen_stabs_from_generators(gens, split_triviality=True)
+        stab_t, stab_nt = gen_stabs_new(gens)
     compat_stabs = [s for s in stab_nt if (not set(banned_qs).intersection(set(s.support)) and total_paulis_done.commutes_each(s, [i for i in range(nq)]))]
     if len(compat_stabs) == 0:
         return []
@@ -333,6 +335,70 @@ def generating_set(plist):
             return [plist[x] for x in gen_set]
     raise ValueError
 
+
+def best_checks_max_clique(graph, target, banned_qs=None, printing=False, stab_nt=None, spc=True, total_paulis_done=None, max_overlap=False):
+    """
+    Use networkx.algorithms.clique.find_cliques to find the largest sets of commuting stabilizers
+    Should be significantly faster when the largest subgroups become large
+
+    :param graph:
+    :param target:
+    :param banned_qs:
+    :param printing:
+    :param stab_nt:
+    :param spc:
+    :param total_paulis_done:
+    :param max_overlap:
+    :return:
+    """
+    if banned_qs is None and spc:
+        banned_qs = [0]
+    elif banned_qs is None:
+        banned_qs = []
+    nq = graph.number_of_nodes()
+    if total_paulis_done is None:
+        total_paulis_done = target
+
+    if printing:
+        print(target.to_str())
+    # find compatible stabilizers
+    if stab_nt is None:
+        gens = stabilizers_from_graph(graph)
+        # We are only interested in the non-trivial stabilizers - trivial stabilizers with non-overlapping supports give us no new info
+        stab_t, stab_nt = gen_stabs_new(gens)
+    compat_stabs = [s for s in stab_nt if (not set(banned_qs).intersection(set(s.support)) and total_paulis_done.commutes_each(s, [i for i in range(nq)]))]
+    if len(compat_stabs) == 0:
+        return []
+    # generate a list of all the possible strategies - each strategy may involve multiple stabilizers.
+    num_stabs = len(compat_stabs)
+    stab_dict = {i: compat_stabs[i] for i in range(num_stabs)}
+    # Build the commutator matrix
+    c_mat = np.zeros((num_stabs, num_stabs))
+    for i in range(num_stabs):
+        for j in range(i+1, num_stabs):
+            if stab_dict[i].commutes_each(stab_dict[j], [_ for _ in range(nq)]):
+                c_mat[i, j] = c_mat[j, i] = 1
+
+    # Find max cliques
+    g = from_numpy_matrix(c_mat)
+    max_cliq = maximal_cliques(g)
+
+    # Find max overlap
+    current_winner = None
+    best_overlap = 0
+    for b in max_cliq:
+        overlap = sum(
+            [len(set(stab_dict[c].support).intersection(target.support)) / len(stab_dict[c].support) for c in b])
+        if overlap > best_overlap or current_winner is None:
+            best_overlap = overlap
+            current_winner = b
+    check = [stab_dict[current_winner[i]] for i in range(len(current_winner))]
+
+    gen_checks = generating_set(check)
+    if printing:
+        print([p.to_str() for p in check])
+        print([p.to_str() for p in gen_checks])
+    return gen_checks
 
 def main():
     from graphs import gen_ring_graph
