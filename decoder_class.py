@@ -1,9 +1,9 @@
 import random
 from pauli_class import Pauli, Strategy, multi_union
 from stab_formalism import is_compatible, stabilizers_from_graph, gen_strats_from_stabs, gen_logicals_from_stab_grp, \
-    gen_stabs_from_generators
+    gen_stabs_from_generators, gen_stabs_new
 import numpy as np
-from error_correction import pauli_error_decoder, cascade_error_correction
+from error_correction import pauli_error_decoder, cascade_error_correction, best_checks, best_checks_max_clique
 from copy import deepcopy
 from time import time
 
@@ -54,7 +54,7 @@ class CascadeDecoder:
         self.nq = graph.number_of_nodes()
         self.graph = graph
         stab_generators = stabilizers_from_graph(graph)
-        self.stab_grp_t, self.stab_grp_nt = gen_stabs_from_generators(stab_generators, split_triviality=True)
+        self.stab_grp_t, self.stab_grp_nt = gen_stabs_new(stab_generators)
         self.q_lost = []
         self.purgatory_q = None  # If there is a qubit that has been lost, but we haven't tried to measure it indirectly yet
         self.purg_q_basis = None
@@ -513,6 +513,8 @@ class CascadeDecoder:
                     if printing:
                         print(f'{success_pattern=}')
                         print(f'{self.strat.pauli.to_str()}')
+                        print(f'{pauli_done.to_str()=}')
+                        print(f'{q_lost=}')
                         print(f'{success=}')
                         print('\n')
 
@@ -641,13 +643,12 @@ class CascadeDecoder:
         :param z_direct:
         :return:
         """
-        from error_correction import best_checks
         if z_direct:
             banned_q = []
         else:
             banned_q = [0, self.current_target]
         banned_q += self.q_lost
-        checks = best_checks(self.graph, self.target_pauli, banned_qs=banned_q, stab_nt=self.stab_grp_nt, total_paulis_done=self.pauli_done, max_overlap=True)  # Needs to be compatible with the pauli measurements done, not just the target (may be extras)
+        checks = best_checks_max_clique(self.graph, self.target_pauli, banned_qs=banned_q, stab_nt=self.stab_grp_nt, total_paulis_done=self.pauli_done, max_overlap=True)  # Needs to be compatible with the pauli measurements done, not just the target (may be extras)
         if checks:
             overall_pauli = multi_union(checks)
             for c in checks:
@@ -697,7 +698,8 @@ class CascadeDecoder:
             prob = item.outcome_prob(transmission, 0, transmission)
             tot_prob += prob
             if ec:
-                tot_pauli_success += prob * item.no_flip_prob([depolarizing_noise / 4])
+                no_flip = item.no_flip_prob([depolarizing_noise / 4])
+                tot_pauli_success += prob * no_flip
         if ec:
             tot_pauli_success_given_teleportation = tot_pauli_success / tot_prob
             # print(tot_prob, tot_pauli_success, tot_pauli_success_given_teleportation)
@@ -719,11 +721,15 @@ class FastDecoder:
     """
     A streamlined decoder with no cascading or error correcting attributes to go to higher qubit numbers
     """
-    def __init__(self, g):
+    def __init__(self, g, new_nt_stabs=False):
         self.nq = g.number_of_nodes()
         self.graph = g
         stab_generators = stabilizers_from_graph(g)
-        self.stab_grp_t, self.stab_grp_nt = gen_stabs_from_generators(stab_generators, split_triviality=True)
+        self.nt_new = new_nt_stabs
+        if self.nt_new:
+            self.stab_grp_t, self.stab_grp_nt = gen_stabs_new(stab_generators, pc=False)
+        else:
+            self.stab_grp_t, self.stab_grp_nt = gen_stabs_from_generators(stab_generators, split_triviality=True)
         self.q_lost = []
         self.pauli_done = Pauli([], [], self.nq, 0)
         self.arb_meas = []
@@ -1005,13 +1011,26 @@ class FastDecoder:
         else:
             return False, None
 
-    def get_dict(self, rebuild_tree=False, basis='spc'):
+    def get_dict(self, rebuild_tree=False, basis='spc', condensed=False):
+        """
+
+        :param rebuild_tree:
+        :param basis:
+        :param condensed: For high qubit number graphs it is more efficient to consider the number of successful measurements
+        and the number of failures, to condense the size of the results dict. dict looks like {(n_measurements, n_losses): number_of_occurances, ... }
+        i.e. we no longer care about the basis
+        :return:
+        """
         self.expr_dicts[basis] = {}
         if len(self.successful_outcomes[basis]) == 0 or rebuild_tree:
             self.successful_outcomes[basis] = []
             self.build_tree()
         for r in self.successful_outcomes[basis]:
-            k = tuple([v for v in r.counter.values()])
+            if condensed:
+                counts = list(r.counter.values())
+                k = (sum(counts[0::2]), sum(counts[1::2]))
+            else:
+                k = tuple([v for v in r.counter.values()])
             # print(k)
             if k in self.expr_dicts[basis].keys():
                 self.expr_dicts[basis][k] += 1
@@ -1023,6 +1042,9 @@ class FastDecoder:
         return sum(
             [self.expr_dicts[basis][k] * eta ** sum([k[i] for i in (0, 2, 4, 6)]) * (1 - eta) ** sum([k[i] for i in (1, 3, 5, 7)]) for k in
              self.expr_dicts[basis].keys()])
+
+
+
 
 
 def main():
