@@ -6,8 +6,14 @@ class FastResult:
         self.spc_dict = spc_dict
 
     def get_spc_prob(self, eta):
-        return sum([self.spc_dict[k] * eta ** sum([k[i] for i in (0, 2, 4, 6)]) *
+        if len(list(self.spc_dict.keys())[0]) == 8:
+            return sum([self.spc_dict[k] * eta ** sum([k[i] for i in (0, 2, 4, 6)]) *
                     (1 - eta) ** sum([k[i] for i in (1, 3, 5, 7)]) for k in self.spc_dict.keys()])
+        elif len(list(self.spc_dict.keys())[0]) == 12:
+            return sum([self.spc_dict[k] * eta ** sum([k[i] for i in (0, 3, 6, 9)]) *
+                        (1 - eta) ** sum([k[i] for i in (2, 5, 8, 11)]) * 0 ** sum([k[i] for i in (1, 4, 7, 10)]) for k in self.spc_dict.keys()])
+        else:
+            return sum([self.spc_dict[k] * eta ** sum(k[0::2]) * (1 - eta) ** sum(k[1::2]) for k in self.spc_dict.keys()])
 
 
 class AnalyticCascadedResult:
