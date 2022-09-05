@@ -1,5 +1,64 @@
 from itertools import combinations, product
-from pauli_class import Pauli, Strategy
+from pauli_class import Pauli, Strategy, pauli_prod
+
+
+def gen_bipartitions(vals):
+    combos = []
+    for r in range(1, len(vals)//2 + 1):
+        seen = set()
+        for x in combinations(vals, r):
+            seen.add(x)
+            y = tuple(set(vals) - set(x))
+            if y not in seen:
+                combos.append((x, y))
+    return combos
+
+
+def gen_stabs_new(stab_gens):
+    """
+    New implementation to do triviality testing - possibly a slow way of doing it
+    TODO Check out SMS's stabilizer tracking to generate NT stabilizers by tracking them as the graph is generated
+    :param stab_gens:
+    :return:
+    """
+    print("NEW METHOD")
+    stab_grp = {}
+    triv = []
+    non_triv = []
+    n_gens = len(stab_gens)
+    nq = stab_gens[0].n
+    q_list = list(range(nq))
+    gen_ixs = list(range(n_gens))
+
+    for r in range(1, n_gens+1):
+        for gen_combo in combinations(gen_ixs, r):
+            new_pauli = pauli_prod([stab_gens[i] for i in gen_combo])
+            stab_grp[gen_combo] = new_pauli
+
+    def is_trivial(p):
+        trivial = False
+        q_list = list(p.support)
+        x_str = p.xs
+        z_str = p.zs
+        # print(x_str)
+        for bp in gen_bipartitions(q_list):
+            bp_size = len(bp[0])
+            p2 = p.copy()
+            for ix in bp[1]:
+                p2.update_xs(ix, 0)
+                p2.update_zs(ix, 0)
+            for p3 in stab_grp.values():
+                if len(p3.support) == bp_size:
+                    if p2.equivalent(p3):
+                        return True
+        return False
+
+    for k, v in stab_grp.items():
+        if is_trivial(v):
+            triv.append(v)
+        else:
+            non_triv.append(v)
+    return triv, non_triv
 
 
 def gen_stabs_from_generators(stab_gens, split_triviality=False):
@@ -132,7 +191,6 @@ def get_measurements(stab_grp, t, get_individuals=False, new_implementation=Fals
     if new_implementation:
         bases = [p for p in product(('x', 'y', 'z'), repeat=2)]
 
-
         def get_other_bases(b):
             return [b2 for b2 in bases if b2[0] != b[0] and b2[1] != b[1] and b < b2]
 
@@ -153,13 +211,19 @@ def get_measurements(stab_grp, t, get_individuals=False, new_implementation=Fals
                             x_meas = [i for i in range(1, num_q) if s1.xs[i] == 1 or s2.xs[i] == 1]
                             z_meas.remove(t)
                             x_meas.remove(t)
-                            measurements.append(Pauli(z_meas, x_meas, num_q, 0))
+                            s1_ = s1.copy()
+                            s2_ = s2.copy()
+                            for s in (s1_, s2_):
+                                for qix in (0, t):
+                                    s.update_xs(qix, 0)
+                                    s.update_zs(qix, 0)
+                            measurements.append((Pauli(z_meas, x_meas, num_q, 0), s1_, s2_))
 
         # Return only unique measurements
         # Alternative unique element finding (FASTER)
-        a_dict = {tuple(p.xs + p.zs): p for p in measurements}
+        a_dict = {tuple(p[0].xs + p[0].zs): p for p in measurements}
         nu_meas = [a_dict[key] for key in a_dict.keys()]
-        strats = [Strategy(m, t) for m in nu_meas]
+        strats = [Strategy(m[0], t, s1=m[1], s2=m[2]) for m in nu_meas]
         strats.sort(key=lambda x: x.pauli.weight(), reverse=False)
         return strats
     else:
@@ -260,7 +324,7 @@ def gen_strats_from_graph(graph, no_y=False, targets=None):
     num_qubits = graph.number_of_nodes()
     # For a given Input graph, find it's stabilizer group, and the set of trivial and non-trivial stabilizers
     stab_gen = stabilizers_from_graph(graph)
-    stab_grp_t, stab_grp_nt = gen_stabs_from_generators(stab_gen, split_triviality=True)
+    stab_grp_t, stab_grp_nt = gen_stabs_new(stab_gen)
     # Get the set of unique measurement operators that can teleport
     strats = []
     if targets is None:
