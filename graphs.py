@@ -16,7 +16,13 @@ def get_graph_from_neighbours(n_list):
     return g
 
 
-def draw_graph(g, spin_nodes=0, save=False, filename=None):
+def draw_graph(g, spin_nodes=0, save=False, filename=None, from_edges=False):
+    if from_edges:
+        g_ = nx.Graph()
+        n_nodes = max([m for e in g for m in e])
+        g_.add_nodes_from(list(range(n_nodes)))
+        g_.add_edges_from(g)
+        g = g_
     if spin_nodes is None:
         spin_nodes = []
     elif type(spin_nodes) is int:
