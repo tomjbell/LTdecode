@@ -13,6 +13,7 @@ from time import time
 from itertools import combinations, groupby
 from multiprocessing import Pool
 import bz2
+from tqdm import tqdm
 
 
 def tot_q(concat, type='cascaded'):
@@ -305,29 +306,40 @@ def plotting(n):
     plt.show()
 
 
-def get_best_perf(min_q, max_q, eta=0.99, find_threshold=False):
+def get_best_perf(min_q, max_q, eta=0.99, find_threshold=False, prefix_num=None, printing=True, graph_data_12q=False):
     """
     Find the best spc graphs for the top layer.
-    Becasue we are only looking at one layer only consider one representative graph from each class
+    Because we are only looking at one layer only consider one representative graph from each class
+    Find threshold and subthreshold performance, and code distance
     """
     best_graphs_dict = {}
     for n in range(min_q, max_q + 1):
         if n > 9:
-            path = os.getcwd() + f'/graphs_batched_{n}q'
-            filenames = [f[:-4] for f in os.listdir(f'graphs_batched_{n}q') if f.startswith('graph_performance')]
+            if graph_data_12q:
+                path = os.getcwd() + '/graph_data_12q'
+            else:
+                path = os.getcwd() + f'/graphs_batched_{n}q'
+            if prefix_num is not None:
+                prefix = f"graph_performance_batch{prefix_num}"
+            else:
+                prefix = "graph_performance_batch"
+            filenames = [f[:-4] for f in os.listdir(path) if f.startswith(prefix)]
         else:
             path = os.getcwd() + f'/data/spc_data'
             filenames = [f"{n}_qubit_performance"]
 
         best_subthresh_graph = None
         best_threshold_graph = None
+        best_dist_graph = None
         max_subthresh = 0
         min_threshold = 1
+        max_dist = 1
 
         ix = 0
-        for file in filenames:
+        for file in tqdm(filenames):
             list_of_dicts = load_obj(file, path)
-            print(f"Graphs loaded, filesize={get_size(list_of_dicts)}")
+            if printing:
+                print(f"Graphs loaded, filesize={get_size(list_of_dicts)}")
             for graph in list_of_dicts:
                 edges = graph[0]
                 spcr = graph[1]
@@ -346,13 +358,21 @@ def get_best_perf(min_q, max_q, eta=0.99, find_threshold=False):
                     best_threshold_graph = graph
                 # Get subthreshold performance
                 spc = r.get_spc_prob(eta)
+                l1e3 = 1 - r.get_spc_prob(1 - 0.001)
+                l1e5 = 1 - r.get_spc_prob(1 - 0.00001)
+                distance = (np.log10(l1e3) - np.log10(l1e5)) / 2
+                if distance > max_dist:
+                    best_dist_graph = graph
+                    max_dist = distance
+
                 if spc > max_subthresh:
                     best_subthresh_graph = graph
                     max_subthresh = spc
-            print(f'File number #{ix} complete, current bests: {max_subthresh}, {min_threshold}')
+            if printing:
+                print(f'File number #{ix} complete, current bests: {max_subthresh=}, {min_threshold=}, {max_dist=}')
             ix += 1
-        best_graphs_dict[n] = (best_subthresh_graph, max_subthresh, best_threshold_graph, min_threshold)
-        print((best_subthresh_graph, max_subthresh, best_threshold_graph, min_threshold))
+        best_graphs_dict[n] = (best_subthresh_graph, max_subthresh, best_threshold_graph, min_threshold, best_dist_graph, max_dist)
+        print(best_graphs_dict[n])
     return best_graphs_dict
 
 
@@ -574,6 +594,21 @@ def graph_perf_spc_only(graph_info):
     return edges, spc, class_size
 
 
+def graph_perf_pauli(graph_info):
+    class_size = graph_info[0]
+    edges = graph_info[1]
+    g = nx.Graph()
+    n = max([i for edge in edges for i in edge])
+    g.add_nodes_from(list(range(n)))
+
+    # print(edges)
+    g.add_edges_from(edges)
+    dec = CascadeDecoder(g)
+    bases = ['x', 'y', 'z']
+    xr, yr, zr = [dec.get_dict(basis=b, cascading=False) for b in bases]
+    return edges, xr, yr, zr
+
+
 def get_graph_perf_dicts(n, spc_only=True, mp=False):
     """
 
@@ -591,7 +626,13 @@ def get_graph_perf_dicts(n, spc_only=True, mp=False):
 
         save_obj(data_out, f"{n}_qubit_performance", "data/spc_data")
     else:
-        pass
+        if mp:
+            with Pool() as p:
+                data_out = p.map(graph_perf_pauli, graph_data)
+        else:
+            data_out = [graph_perf_pauli(g) for g in graph_data]
+        save_obj(data_out, f"{n}_qubit_performance", "data/pauli_data")
+
 
 def scatter_perf_class_size(n, eta=0.99, spc_only=True):
     data = load_obj(f'{n}_qubit_performance', "data/spc_data")
@@ -624,7 +665,7 @@ def get_distance(spcr, plot=True, show_plot=True):
 
 if __name__ == '__main__':
     for n in range(4, 10):
-        scatter_perf_class_size(n)
+        get_graph_perf_dicts(n, spc_only=False, mp=True)
 
 
 
