@@ -2,7 +2,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from itertools import product, combinations
 import numpy as np
-from alcpack import local_complementation
+# from alcpack import local_complementation
 
 
 def get_graph_from_neighbours(n_list):
@@ -13,6 +13,14 @@ def get_graph_from_neighbours(n_list):
         for nod2 in nod[1]:
             if (nod[0], nod2) not in g.edges and (nod2, nod[0]) not in g.edges:
                 g.add_edge(nod[0], nod2)
+    return g
+
+
+def graph_from_edges(edges):
+    g = nx.Graph()
+    n_nodes = max([node for edge in edges for node in edge])
+    g.add_nodes_from(list(range(n_nodes)))
+    g.add_edges_from(edges)
     return g
 
 
@@ -128,36 +136,36 @@ def gen_rgs_graph(n):
     g.add_edges_from([(node, node+2 * n) for node in range(2 * n)])
     return g
 
-
-def x_meas_graph(g, v):
-    """
-    generate the new graph obtained by performing an x measurement on vertex v of the graph g
-    :param g:
-    :param v:
-    :return:
-    """
-    a = [x for x in g.neighbors(v)][0]
-    g2 = local_complementation(local_complementation(g, a), v)
-    nu_edge_list = []
-    for e in g2.edges:
-        if v not in e:
-            nu_edge_list.append(e)
-    out_graph = nx.Graph()
-    out_graph.add_nodes_from(g.nodes)
-    out_graph.add_edges_from(nu_edge_list)
-    return local_complementation(out_graph, a)
-
-
-def y_meas_graph(g, v):
-    g2 = local_complementation(g, v)
-    nu_edge_list = []
-    for e in g2.edges:
-        if v not in e:
-            nu_edge_list.append(e)
-    out_graph = nx.Graph()
-    out_graph.add_nodes_from(g.nodes)
-    out_graph.add_edges_from(nu_edge_list)
-    return out_graph
+#
+# def x_meas_graph(g, v):
+#     """
+#     generate the new graph obtained by performing an x measurement on vertex v of the graph g
+#     :param g:
+#     :param v:
+#     :return:
+#     """
+#     a = [x for x in g.neighbors(v)][0]
+#     g2 = local_complementation(local_complementation(g, a), v)
+#     nu_edge_list = []
+#     for e in g2.edges:
+#         if v not in e:
+#             nu_edge_list.append(e)
+#     out_graph = nx.Graph()
+#     out_graph.add_nodes_from(g.nodes)
+#     out_graph.add_edges_from(nu_edge_list)
+#     return local_complementation(out_graph, a)
+#
+#
+# def y_meas_graph(g, v):
+#     g2 = local_complementation(g, v)
+#     nu_edge_list = []
+#     for e in g2.edges:
+#         if v not in e:
+#             nu_edge_list.append(e)
+#     out_graph = nx.Graph()
+#     out_graph.add_nodes_from(g.nodes)
+#     out_graph.add_edges_from(nu_edge_list)
+#     return out_graph
 
 
 def z_meas_graph(g, v):
