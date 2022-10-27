@@ -2,7 +2,7 @@ import networkx as nx
 import numpy as np
 from pauli_class import Pauli, Strategy
 from stab_formalism import stabilizers_from_graph, gen_stabs_from_generators, gen_logicals_from_stab_grp, \
-    gen_strats_from_stabs
+    gen_strats_from_stabs, gen_stabs_new
 from itertools import combinations, product
 from graphs import gen_ring_graph, draw_graph
 import matplotlib.pyplot as plt
@@ -11,7 +11,29 @@ from copy import deepcopy
 from random import random
 
 
+class LFStrategy:
+    def __init__(self, pauli, lx=None, lz=None, anticommuting_ix=None):
+        self.pauli = pauli
+        self.x = lx
+        self.z = lz
+        self.to_fuse = anticommuting_ix
+
+    def copy(self):
+        if self.x is not None:
+            x_ = self.x.copy()
+        else:
+            x_ = None
+        if self.z is not None:
+            z_ = self.z.copy()
+        else:
+            z_ = None
+        return Strategy(self.pauli.copy(), x_, z_, self.to_fuse.copy())
+
+
 class FusionDecoder:
+    """
+    Superclass for the different types of fusion decoder, used for generating success probabilities and thresholds for FBQC
+    """
     def __init__(self, graph=None):
         if graph is None:
             pass
@@ -19,7 +41,7 @@ class FusionDecoder:
             self.nq = graph.number_of_nodes()
             self.graph = graph
             stab_generators = stabilizers_from_graph(graph)
-            self.stab_grp_t, self.stab_grp_nt = gen_stabs_from_generators(stab_generators, split_triviality=True)
+            self.stab_grp_t, self.stab_grp_nt = gen_stabs_new(stab_generators)
 
     def best_perasure_with_w(self, eta, pfail, take_min=True):
         ws = np.linspace(0, 1)
@@ -74,8 +96,17 @@ class FusionDecoder:
     def plot_threshold(self, n_points=27, pthresh=0.88, optimising_eta=0.96, show=True, w=None, line='--', take_min=True, print_max_w=False, no_w=False):
         pfails = np.linspace(0.001, 0.5, n_points)
         data = [1-self.get_threshold(p, pthresh=pthresh, w=w, optimising_eta=optimising_eta, take_min=take_min, print_max_w=print_max_w, no_w=no_w) for p in pfails]
+
         # print(data)
-        plt.plot(pfails, data, line)
+        xclean = []
+        yclean = []
+        for i in range(len(pfails)):
+            if data[i] > 0:
+                xclean.append(pfails[i])
+                yclean.append(data[i])
+        plt.plot(xclean, yclean, line, color='k')
+        pfdiscr = [0.5 ** i for i in range(2, 7)]
+        plt.plot(pfdiscr, [1-self.get_threshold(p, pthresh=pthresh, w=w, optimising_eta=optimising_eta, take_min=take_min, print_max_w=print_max_w, no_w=no_w) for p in pfdiscr], color='k', marker='o', linestyle='')
         if show:
             plt.xlabel('pfail')
             plt.ylabel('loss threshold')
@@ -87,6 +118,7 @@ class TransversalFusionDecoder(FusionDecoder):
         super(TransversalFusionDecoder, self).__init__(graph)
         self.logical_operators = gen_logicals_from_stab_grp(self.stab_grp_nt, self.nq)
         self.fusion_outcomes = None
+        self.fb_dicts = None
 
     def get_xz_logicals(self):
         """
@@ -98,17 +130,17 @@ class TransversalFusionDecoder(FusionDecoder):
         for m_type in ['x', 'z']:
             for p in log_all[m_type]:
                 # Get rid of anything with Y measurement - this is unnecessary!
-                xs = set(p.x_ix)
-                zs = set(p.z_ix)
-                good = True
                 # for q in p.support:
                 #     if p.get_meas_type(q) == 'y':
                 #         good = False
+                xs = set(p.x_ix)
+                zs = set(p.z_ix)
+                good = True
                 if good:
                     log_out[m_type].append((xs - zs, xs & zs, zs - xs, p))
         return log_out
 
-    def fbqc_decode(self, monte_carlo=False):
+    def decode(self, monte_carlo=False):
         """
         Follow the FBQC approach to finding FBQC loss tolerance thresholds
         xx measurements are independent of zz measurements
@@ -124,17 +156,18 @@ class TransversalFusionDecoder(FusionDecoder):
             pass
         else:
             fusion_outcomes = []
-            # Generate all sets of possible outcomes, [loss, fused, fail recover x, fail recover z]
+            # Generate all sets of possible outcomes, [loss, fused, fail recover x, fail_recover y, fail recover z]
             # Probabilities [(1 - eta ** 1/pfail), eta**1/pfail * (1 - pfail), eta**1/pfail * (1-w)pfail, eta ** 1/pfail * wpfail]
-            for outcomes in product(['loss', 'fused', 'x', 'z'], repeat=self.nq-1):
-                lost = [i + 1 for i, x in enumerate(outcomes) if x == "loss"]
+            for outcomes in product(['loss', 'fused', 'x', 'y', 'z'], repeat=self.nq-1):
+                lost = set([i + 1 for i, x in enumerate(outcomes) if x == "loss"])
                 fused = set([i + 1 for i, x in enumerate(outcomes) if x == "fused"])
                 xrec = set([i + 1 for i, x in enumerate(outcomes) if x == "x"])
+                yrec = set([i + 1 for i, x in enumerate(outcomes) if x == "y"])
                 zrec = set([i + 1 for i, x in enumerate(outcomes) if x == "z"])
                 xm = fused.union(xrec)
-                ym = fused
+                ym = fused.union(yrec)
                 zm = fused.union(zrec)
-                probs = (len(lost), len(fused), len(xrec), len(zrec))
+                probs = (lost, fused, xrec, yrec, zrec)
                 ops_measured = {'x': False, 'z': False, 'probs': probs}
                 for m_type in ('x', 'z'):
                     for operator in logical_operators[m_type]:
@@ -146,15 +179,74 @@ class TransversalFusionDecoder(FusionDecoder):
                     fusion_outcomes.append(ops_measured)
             self.fusion_outcomes = fusion_outcomes
 
+    def get_fixed_basis_dicts(self):
+        """
+        Generate the results for fusion, xx and zz recovered logical measurements - for use in FBQC stuff
+        :return:
+        """
+        dicts = {'fusion': {}, 'xrec': {}, 'zrec': {}}
+        for rec_bases in product(['x', 'y', 'z'], repeat=self.nq-1):
+            for mt_dict in dicts.values():
+                mt_dict[rec_bases] = {}
+            xf = set([i + 1 for i, x in enumerate(rec_bases) if x == "x"])
+            yf = set([i + 1 for i, x in enumerate(rec_bases) if x == "y"])
+            zf = set([i + 1 for i, x in enumerate(rec_bases) if x == "z"])
+            m_type_done = None
+            for f_res in self.fusion_outcomes:
+                if f_res['z']:
+                    if f_res['x']:
+                        m_type_done = 'fusion'
+                    else:
+                        m_type_done = 'zrec'
+                elif f_res['x']:
+                    m_type_done = 'xrec'
+                if m_type_done is not None:
+                    l, f, x, y, z = f_res['probs']
+                    if x.issubset(xf) and y.issubset(yf) and z.issubset(zf):
+                        nl, nf, nx, ny, nz = [len(a) for a in [l, f, x, y, z]]
+                        key = (nl, nf, nx + ny + nz)
+                        if key in dicts[m_type_done][rec_bases]:
+                            dicts[m_type_done][rec_bases][key] += 1
+                        else:
+                            dicts[m_type_done][rec_bases][key] = 1
+        self.fb_dicts = dicts
+
+    def best_fixed_basis(self, eta, pfail):
+        if self.fb_dicts is None:
+            self.get_fixed_basis_dicts()
+        na = 1 / pfail
+        best_config = None
+        max_p = 0
+
+        def prob(expr_dict):
+            return sum([v * (1 - eta ** na) ** k[0] * ((1 - pfail) * eta ** na) ** k[1] * (pfail * eta ** na) ** k[2] for k, v in expr_dict.items()])
+        for key, val in self.fb_dicts.items():
+            p = prob(val)
+            if p > max_p:
+                max_p = p
+                best_config = key
+        return best_config, max_p
+
+    def fusion_prob(self, etas, p_fail):
+        return [self.best_fixed_basis(eta, p_fail)[1] for eta in etas]
+
     def get_probs_from_outcomes(self, eta, pfail, w):
-        def prob(nlost, nfused, nxrec, nzrec):
+        """
+        Calculate the probability of obtaining a particular pattern given that you are randomly selecting between
+        failing in the X and Z bases with weighting w
+        :param eta:
+        :param pfail:
+        :param w:
+        :return:
+        """
+        def prob(nlost, nfused, nxrec, nyrec, nzrec):
             a = 1/pfail
             return ((1 - eta ** a) ** nlost) * (eta ** a * (1 - pfail)) ** nfused *\
-                   (eta ** a * (1 - w) * pfail) ** nxrec * (eta ** a * w * pfail) ** nzrec
+                   (eta ** a * (1 - w) * pfail) ** nxrec * (eta ** a * w * pfail) ** nzrec * 0 ** nyrec
         prob_dict = {'fusion': 0, 'xrec': 0, 'zrec': 0}
         for f_res in self.fusion_outcomes:
-            nl, nf, nx, nz = f_res['probs']
-            p = prob(nl, nf, nx, nz)
+            nl, nf, nx, ny, nz = [len(a) for a in f_res['probs']]
+            p = prob(nl, nf, nx, ny, nz)
             if f_res['x']:
                 prob_dict['xrec'] += p
                 if f_res['z']:
@@ -166,7 +258,10 @@ class TransversalFusionDecoder(FusionDecoder):
 
 
 class DiffBasisTransversalDecoder(FusionDecoder):
-    """ This strategy we choose the failure basis for the fusion measurements independently for each qubit"""
+    """
+    This strategy we choose the failure basis for the fusion measurements independently for each qubit
+    THIS DECODER IS NOT FULLY IMPLEMENTED
+    """
     def __init__(self, graph, picker='maxmin'):
         super(DiffBasisTransversalDecoder, self).__init__(graph)
         self.xyz_logical_operators = gen_logicals_from_stab_grp(self.stab_grp_nt, self.nq)
@@ -412,7 +507,7 @@ class AdaptiveFusionDecoder(FusionDecoder):
                         self.fusion_failures['z'].append(self.failure_q)
                     self.failure_q = None
 
-                self.update_available_strats() #TODO Configure this so it will update the teleportation and logical pauli measurements available
+                self.update_available_strats()
                 self.finished = self.decoding_finished()
                 if not self.finished:
                     self.strat = self.strategy_picker_new()
@@ -432,24 +527,23 @@ class AdaptiveFusionDecoder(FusionDecoder):
                 self.target_pauli = self.strat.pauli
                 self.current_target = self.strat.t
                 self.target_measured = self.current_target in self.fused_qubits
+                if self.target_measured or self.current_target is None:
+                    q = list(set(self.target_pauli.support) - set(self.pauli_done.support) - set(self.fused_qubits))[0]  # Get next qubit to measure
+                    meas_type = self.target_pauli.get_meas_type(q)
 
-                q = list(set(self.target_pauli.support) - set(self.pauli_done.support))[0]  # Get next qubit to measure
-
-                meas_type = self.target_pauli.get_meas_type(q)
-
-                good = self.next_meas_outcome(starting_point, first_traversal=first_traversal)
-                if good:
-                    self.success_pattern.append(1)
-                    self.pauli_done.update_zs(q, self.target_pauli.zs[q])
-                    self.pauli_done.update_xs(q, self.target_pauli.xs[q])
-                    self.counter[meas_type] += 1
-                else:
-                    self.success_pattern.append(0)
-                    self.q_lost.append(q)
-                    self.counter[f'{meas_type}f'] += 1
-                self.update_available_strats()
-                self.finished = self.decoding_finished()
-                self.cache_status()
+                    good = self.next_meas_outcome(starting_point, first_traversal=first_traversal)
+                    if good:
+                        self.success_pattern.append(1)
+                        self.pauli_done.update_zs(q, self.target_pauli.zs[q])
+                        self.pauli_done.update_xs(q, self.target_pauli.xs[q])
+                        self.counter[meas_type] += 1
+                    else:
+                        self.success_pattern.append(0)
+                        self.q_lost.append(q)
+                        self.counter[f'{meas_type}f'] += 1
+                    self.update_available_strats()
+                    self.finished = self.decoding_finished()
+                    self.cache_status()
 
                 if printing:
                     self.print_status()
@@ -475,8 +569,13 @@ class AdaptiveFusionDecoder(FusionDecoder):
         :return:
         """
         protocol_finished = False
-        if self.pauli_done is not None and self.target_pauli is not None:
-            if self.pauli_done.contains_other(self.target_pauli) and (self.current_target in self.fused_qubits):
+        if self.pauli_done is not None and self.target_pauli is not None:  # TODO don't actually require pauli done to be None here??
+            # Remove the fused qubits from the target pauli operator
+            p_target_minus_fused = self.target_pauli.copy()
+            for i in self.fused_qubits:
+                p_target_minus_fused.update_xs(i, 0)
+                p_target_minus_fused.update_zs(i, 0)
+            if self.pauli_done.contains_other(p_target_minus_fused) and (self.current_target in self.fused_qubits):
                 self.fusion_complete = True
                 self.xlog_measured = True  #TODO Check these explicitly?
                 self.zlog_measured = True
@@ -485,20 +584,20 @@ class AdaptiveFusionDecoder(FusionDecoder):
                 for x_log in self.p_log_remaining[0]:
                     if self.pauli_done.contains_other(x_log.pauli, exclude=self.fused_qubits):
                         self.xlog_measured = True
-                        try:
-                            assert not self.p_log_remaining[1]  #TODO maybe print here
-                        except AssertionError:
-                            self.print_status()
-                            exit()
+                        # try:
+                        #     assert not self.p_log_remaining[1]  #TODO maybe print here
+                        # except AssertionError:
+                        #     self.print_status()
+                        #     exit()
                         protocol_finished = True
-                        break
                 for z_log in self.p_log_remaining[1]:
                     if self.pauli_done.contains_other(z_log.pauli, exclude=self.fused_qubits):
                         self.zlog_measured = True
-                        assert not self.p_log_remaining[0]  #There shouldn't be any xlogicals remaining if pathfinding failed and zlogical succeeded
+                        # assert not self.p_log_remaining[0]  #There shouldn't be any xlogicals remaining if pathfinding failed and zlogical succeeded
                         protocol_finished = True
                         break
-                assert not (self.xlog_measured and self.zlog_measured)  # Shouldn't be able to have done both if we failed pathfinding
+                # assert not (self.xlog_measured and self.zlog_measured)  # Shouldn't be able to have done both if we failed pathfinding
+                # You actually can have measured both - if you did multiple fusions the X and Z can anticommute on multiple qubits, but this isn't found by pathfinding.
             if (not self.p_log_remaining[0]) and (not self.p_log_remaining[1]):  # If no X and no Z left then we fail
                 protocol_finished = True
             return protocol_finished
@@ -525,6 +624,7 @@ class AdaptiveFusionDecoder(FusionDecoder):
         print([s.pauli.to_str() for s in self.p_log_remaining[1]])
         print(f'{self.xlog_measured=}\n{self.zlog_measured=}\n{self.fusion_complete=}')
         print(f'{self.finished=}')
+        print(f'{self.counter=}')
         print('\n')
 
     def next_meas_outcome(self, starting_point, first_traversal=False, mc=False, p=None):
@@ -553,6 +653,9 @@ class AdaptiveFusionDecoder(FusionDecoder):
 
     def build_tree(self, printing=False):
         """
+        To find the analytic success probability of this method, perform a depth-first search of the decoder. Terminate
+        once a valid solution or a failure is encountered.
+        example (first search 1111(s), then 11101(s), then 11100(f), then 11011(s), 11010(f), 10111(s) ... etc.)
         """
         self.status_dict = {}
         success_count = 0
@@ -565,6 +668,8 @@ class AdaptiveFusionDecoder(FusionDecoder):
                 del out[-1]
             success, xx_done, zz_done, success_pattern, paulis_done, fusions_done, fusion_failures_recovered, fusion_losses, counter = self.decode(
                 starting_point=out[:-1], first_traversal=first_pass, printing=False)
+            if set(paulis_done.support) & set(fusions_done):
+                raise ValueError
             if success or xx_done or zz_done:
                 if success:
                     result = 'fusion'
@@ -587,7 +692,6 @@ class AdaptiveFusionDecoder(FusionDecoder):
                     print('\n')
                 r = (result, self.fused_qubits, self.q_lost, self.fusion_failures, self.fusion_losses, self.counter, self.success_pattern)
                 self.results.append(r)
-                #TODO save these results somewhere so that the success probabilities for fusion, x and z measurements can be calculated
 
             first_pass = False
             out = success_pattern
@@ -655,10 +759,7 @@ class AdaptiveFusionDecoder(FusionDecoder):
         if not strategy_list_in:
             # Look at the measurements for x or z basis measurements
             if self.p_log_remaining[0] or self.p_log_remaining[1]:
-                strats = deepcopy(self.p_log_remaining[0]) + deepcopy(self.p_log_remaining[1])
-                if self.p_log_remaining[0] and self.p_log_remaining[1] and (not free_meas):
-                    self.print_status()
-                    # raise ValueError
+                strats = deepcopy(self.p_log_remaining[1]) + deepcopy(self.p_log_remaining[0])  # TODO the order of this list preferences for XX or ZZ
             else:
                 strats = []
                 assert self.decoding_finished()
@@ -700,13 +801,25 @@ class AdaptiveFusionDecoder(FusionDecoder):
 
 
 class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
-    #TODO merge this functionality in to the parent class
+    # TODO merge this functionality in to the parent class
     def __init__(self, graph):
         super(AdaptiveFailureBasisFusionDecoder, self).__init__(graph)
         self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fusion': 0, 'ffx': 0, 'ffy': 0, 'ffz': 0, 'floss':0}
 
     def decode(self, starting_point=None, first_traversal=False, mc=False, pfail=0.5, w=0.5, eta=1.0, printing=False):
-        # TODO modify this function so the fusion failure basis is deterministic
+        """
+        Given an initial bitstring representing how many qubits have been successfully measured or lost, load the
+        status of the decoder (measurements remaining, qubits lost, measurements performed etc.) and calculate the
+        next measurement to attempt.
+        :param starting_point: bitstring of measurement successes. list
+        :param first_traversal: if true, initiate all paramters to default values. bool
+        :param mc: monte-carlo. each measurement is successful randomly with some probability. bool
+        :param pfail: physical fusion failure probability. float
+        :param w:
+        :param eta: physical transmission
+        :param printing:
+        :return:
+        """
         if starting_point is None:
             assert first_traversal and mc
         self.set_params(starting_point, first_pass=first_traversal, pick_failure_basis=True)
@@ -758,12 +871,6 @@ class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
                         self.target_measured = True
                     else:
                         self.success_pattern.append(0)
-
-                        ########TODO WRITE IN NEW FUNCTIONALITY HERE ###########
-                            # rewrite ffy into counter
-                            # write a choose_failure_basis function
-                            #TODO remove any references to w or probabilistic failure bases
-                            #TODO Update calculation of probabilities
                         failure_basis = self.choose_failure_basis(self.qubit_to_fuse)
 
                         self.counter[f'ff{failure_basis}'] += 1
@@ -781,7 +888,7 @@ class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
                 self.strat = self.strategy_picker_new()
                 self.target_pauli = self.strat.pauli
                 self.current_target = self.strat.t
-                self.target_measured = self.current_target in self.fused_qubits
+                self.target_measured = (self.current_target in self.fused_qubits) or (self.current_target is None)
                 self.cache_status()
 
             # Need to save the measurements done in the pre and post fusion parts of the decoder separately
@@ -792,28 +899,32 @@ class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
                 self.strat = self.strategy_picker_new()
                 self.target_pauli = self.strat.pauli
                 self.current_target = self.strat.t
-                self.target_measured = self.current_target in self.fused_qubits
-
-                q = list(set(self.target_pauli.support) - set(self.pauli_done.support))[0]  # Get next qubit to measure
-
-                meas_type = self.target_pauli.get_meas_type(q)
-
-                good = self.next_meas_outcome(starting_point, first_traversal=first_traversal)
-                if good:
-                    self.success_pattern.append(1)
-                    self.pauli_done.update_zs(q, self.target_pauli.zs[q])
-                    self.pauli_done.update_xs(q, self.target_pauli.xs[q])
-                    self.counter[meas_type] += 1
-                else:
-                    self.success_pattern.append(0)
-                    self.q_lost.append(q)
-                    self.counter[f'{meas_type}f'] += 1
-                self.update_available_strats()
+                self.target_measured = (self.current_target in self.fused_qubits) or (self.current_target is None)
                 self.finished = self.decoding_finished()
-                self.cache_status()
+                if (not self.finished) and self.target_measured:
+                    try:
+                        q = list(set(self.target_pauli.support) - set(self.pauli_done.support) - set(self.fused_qubits))[0]  # Get next qubit to measure (don't need to measure fused qubits!)
+                    except IndexError:
 
-                if printing:
-                    self.print_status()
+                        self.print_status()
+                        raise ValueError('No qubits left to measure, or the decoder has already finished')
+                    meas_type = self.target_pauli.get_meas_type(q)
+                    good = self.next_meas_outcome(starting_point, first_traversal=first_traversal)
+                    if good:
+                        self.success_pattern.append(1)
+                        self.pauli_done.update_zs(q, self.target_pauli.zs[q])
+                        self.pauli_done.update_xs(q, self.target_pauli.xs[q])
+                        self.counter[meas_type] += 1
+                    else:
+                        self.success_pattern.append(0)
+                        self.q_lost.append(q)
+                        self.counter[f'{meas_type}f'] += 1
+                    self.update_available_strats()
+                    self.finished = self.decoding_finished()
+                    self.cache_status()
+
+                    if printing:
+                        self.print_status()
 
         return self.fusion_complete, self.xlog_measured, self.zlog_measured, self.success_pattern, self.pauli_done, self.fused_qubits, self.fusion_failures, self.fusion_losses, self.counter
 
@@ -821,9 +932,8 @@ class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
         """
         Consider the set of measurements remaining where this qubit isn't the target. Pick the best one according to
         strategy_picker_new. Is there a measurement on this qubit? If so, use that basis.
-        TODO If not, think of some other way that chooses but will also give invariance under local complementation
-        TODO When considering the weight of these measurements, also consider the fact that we have a free measurement of
-                failed_qubit, so that should be excluded from the weight
+        If not, choose the measurement basis that is in the greatest number of strategies.
+        If this qubit is in no other strategies, it doesn't matter as it will never contribute
         :param failed_qubit: int
         :return: basis, string
         """
@@ -832,17 +942,14 @@ class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
         if failed_qubit in best.pauli.support:
             basis = best.pauli.get_meas_type(failed_qubit)
         else:
-            notin = [s for s in new_strats_list if failed_qubit not in s.pauli.support]
-            counts = {'x': 0, 'y': 0, 'z': 0}
-            for s in notin:
-                counts[s.pauli.get_meas_type(failed_qubit)] += 1
-            basis = max(counts, key=counts.get)
-            if max(counts.values()) == 0:
-                raise ValueError("How do we choose a basis fairly here? I guess it doesn't matter as it cannot contribute?")
-        # self.print_status()
-        print(f'{failed_qubit=}, {basis=}, {best.pauli.to_str()=}')
-        print([s.pauli.to_str() for s in new_strats_list])
-        print('\n')
+            other_strats_in = [s for s in new_strats_list if failed_qubit in s.pauli.support]
+            if len(other_strats_in) == 0:  # This qubit is not in any more strategies so the basis doesn't matter
+                basis = 'x'
+            else:
+                counts = {'x': 0, 'y': 0, 'z': 0}  # Otherwise, find the best failure basis, even though the qubit isn't in the chosen strategy
+                for s in other_strats_in:
+                    counts[s.pauli.get_meas_type(failed_qubit)] += 1
+                basis = max(counts, key=counts.get)
         return basis
 
     def compile_results_dict(self):
@@ -861,15 +968,23 @@ class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
             else:
                 results_dict[meas_done][key] = [r[5]]
         self.results_dicts = results_dict
-        # print(f'{results_dict=}')
 
-    def get_probs_from_outcomes(self, eta, pfail, w):
+    def get_probs_from_outcomes(self, eta, pfail, w=None):
+        """
+        find the probability of fusion, xx and zz measurements from the analysis done by build_tree
+        :param eta: transmission value to use
+        :param pfail:
+        :param w: The weighting of failure bases. Here failure basis is deterministic, so w is None
+        :return:
+        """
         # For each possible output qubit in the results list, find the probability of the fusion being implemented
         # The pauli measurements required to get to this qubit are then summed over to find the probability of this strategy
 
         prob_dict = {'fusion': 0, 'xrec': 0, 'zrec': 0}
         for m_type in prob_dict.keys():
             # print(m_type)
+            if len(self.results_dicts['fusion'].keys()) == 0:
+                self.build_tree()
 
             for key, value in self.results_dicts[m_type].items():
                 # Find the probability of the fusion part succeeding
@@ -895,6 +1010,9 @@ class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
 
 
 class AnalyticShor22(FusionDecoder):
+    """
+    The (2,2) Shor encoding with analytic success probability from http://arxiv.org/abs/2101.09310 (FBQC paper)
+    """
     def __init__(self):
         super(AnalyticShor22, self).__init__()
 
@@ -930,9 +1048,172 @@ def best_graphs_func(n=None, shor=False):
     return g
 
 
+def get_fusion_peformance(g, decoder_type='ACF', printing=False):
+    """"
+    Write a function which will retrun the results dictionaries for a given graph in a given decoder
+    :param g: The graph to analyse (nx.Graph)
+    :param decoder_type: Adaptive choose failure 'ACF', transversal choose failure 'TCF' or weighted 'AW', 'TW'
+    :param printing: for debugging
+    TODO Complete this function
+    """
+    if decoder_type == 'ACF':
+        # Adaptive Fusion Decoder Choose Failure Basis
+        dec = AdaptiveFailureBasisFusionDecoder(g)
+        dec.build_tree(printing=printing)
+        dec.compile_results_dict()
+        dicts = dec.results_dicts
+        # do stuff
+    elif decoder_type == 'AW':
+        # Adaptive Fusion decoder weighted failure
+        dec = AdaptiveFusionDecoder(g)
+        dec.build_tree(printing=printing)
+        dec.compile_results_dict()
+        dicts = dec.results_dicts
+
+    elif decoder_type == 'TCF':
+        # Transversal decoder with pre-chosen failure bases
+        # Here we will return the dictionaries for every choice of failure basis
+        dec = TransversalFusionDecoder(g)
+        dec.decode()
+        dec.get_fixed_basis_dicts()
+        dicts = dec.fb_dicts
+
+    elif decoder_type == 'TW':
+        # Transversal decoder with weighted failure basis
+        raise NotImplementedError
+        pass
+
+    else:
+        raise ValueError
+    return dicts
+
+
+def prob_from_dict(eta, pfail, dicts_in, decoder_type='ACF'):
+    """
+    From the relevant decoder results dictionary, find the probability of successful fusion, xx or zz measurement
+    :param eta: transmission
+    :param pfail: probability of physical fusion gate failure
+    :param dicts_in: results dictionary from the decoder
+    :param decoder_type: which type of decoder to use, currently supported 'ACF' Adaptive choose failure or 'TCF'
+    Transversal choose failure
+    :return:
+    """
+    # use a small test graph to initialise the decoder - to get the probability it doesn't actually matter
+    test_graph = gen_ring_graph(3)
+    if decoder_type == 'ACF':
+        # Adaptive Fusion Decoder Choose Failure Basis
+        results_dicts = dicts_in
+
+        prob_dict = {'fusion': 0, 'xrec': 0, 'zrec': 0}
+        for m_type in prob_dict.keys():
+            # print(m_type)
+            for key, value in results_dicts[m_type].items():
+                # Find the probability of the fusion part succeeding
+                fusions, ffx, ffy, ffz, losses = key
+                prob_f = ((eta ** (1/pfail)) * (1-pfail)) ** len(fusions) * ((eta ** (1/pfail)) * pfail) ** (len(ffx) + len(ffy) + len(ffz)) * (1 - eta ** (1/pfail)) ** len(losses)
+                # Now find the prob of the Pauli part succeeding
+                pp = 0
+                for item in value:
+                    nx = item['x']
+                    ny = item['y']
+                    nz = item['z']
+                    nxf = item['xf']
+                    nyf = item['yf']
+                    nzf = item['zf']
+                    pp += eta ** (nx + ny + nz) * (1-eta) ** (nxf + nyf + nzf)
+                tot_prob = prob_f * (pp ** 2)
+                # print(tot_prob, prob_f, pp, ffx, ffz, fusions, losses, value)
+                prob_dict[m_type] += tot_prob
+                if m_type == 'fusion':
+                    prob_dict['xrec'] += tot_prob
+                    prob_dict['zrec'] += tot_prob
+        return prob_dict
+
+    elif decoder_type == 'AW':
+        # Adaptive Fusion decoder weighted failure
+        dec = AdaptiveFailureBasisFusionDecoder(test_graph)
+        dec.results_dicts = dicts_in
+        prob_dict = dec.get_probs_from_outcomes(eta, pfail)
+
+    elif decoder_type == 'TCF':
+        # Transversal decoder with pre-chosen failure bases
+        fb_dicts = dicts_in
+        prob_dict = {'fusion': 0, 'xrec': 0, 'zrec': 0}
+        na = 1 / pfail
+
+        # Can only choose the best config for one outcome type - do fusion and if evens do x and z min after
+        best_config = None
+        max_p_fuse = 0
+        max_p_rec_min = 0
+
+        def prob(expr_dict):
+            return sum(
+                [v * (1 - eta ** na) ** k[0] * ((1 - pfail) * eta ** na) ** k[1] * (pfail * eta ** na) ** k[2] for
+                 k, v in expr_dict.items()])
+
+        for key, val in fb_dicts['fusion'].items():
+            p_fuse = prob(val)
+            if p_fuse > max_p_fuse:
+                max_p_fuse = p_fuse
+                best_config = key
+        prob_dict['fusion'] = max_p_fuse
+        if eta == 0:
+            prob_dict['xrec'] = 0
+            prob_dict['zrec'] = 0
+        else:
+            prob_dict['xrec'] = max_p_fuse + prob(fb_dicts['xrec'][best_config])
+            prob_dict['zrec'] = max_p_fuse + prob(fb_dicts['zrec'][best_config])
+        return prob_dict
+
+    elif decoder_type == 'TW':
+        # Transversal decoder with weighted failure basis
+        pass
+
+    else:
+        raise ValueError
+
+
+def rgs_success_probability(n, eta, pf=0.5):
+    """
+    the success probability of a link in the RGS graph is calculated according to the analytic form in https://www.nature.com/articles/ncomms7787
+    :param n: Number of branches in the half RGS state. The number of qubits in the progenitor graph is 2n + 1, including the input
+    :param eta:
+    :param pf:
+    :return:
+    """
+    px = pz = eta
+    pfuse = eta ** (1/pf) * (1 - pf)
+    return (1 - (1 - pfuse) ** n) * px ** 2 * pz ** (2*n-2)
+
+
+def fusion_threshold_from_dict(dict, pf, take_min=True, pthresh=0.88, decoder_type='ACF'):
+    """
+    Get the FBQC threshold for the 6-ring approach to generating the Raussendorf lattice in http://arxiv.org/abs/2101.09310
+    :param dict:
+    :param pf:
+    :param take_min:
+    :param pthresh:
+    :return:
+    """
+
+    def func_to_optimise(eta):
+        probs = prob_from_dict(eta, pf, dict, decoder_type=decoder_type)
+        if take_min:
+            t = min([probs['xrec'], probs['zrec']]) - pthresh
+        else:
+            t = 0.5 * (probs['xrec'] + probs['zrec']) - pthresh
+        return t
+
+    try:
+        threshold = bisection_search([0.88, 1], func_to_optimise)
+    except ValueError:
+        threshold = 1
+    return threshold
+
+
 if __name__ == '__main__':
     g = gen_ring_graph(5)
-    g = best_graphs_func(8)
+    g = best_graphs_func(7)
     draw_graph(g)
     db_dec = DiffBasisTransversalDecoder(g)
     db_dec.decode(picker='maxmin')
@@ -940,11 +1221,11 @@ if __name__ == '__main__':
 
     t_dec = TransversalFusionDecoder(g)
     t_dec.fbqc_decode()
-    t_dec.plot_threshold(show=False, take_min=True, print_max_w=True, optimising_eta=0.96, n_points=9)
-
+    t_dec.plot_threshold(show=False, take_min=True, print_max_w=True, optimising_eta=0.97, n_points=9)
+    #
     adaptive = AdaptiveFusionDecoder(g)
     adaptive.build_tree()
-    adaptive.plot_threshold(take_min=True, show=False, print_max_w=True)
+    adaptive.plot_threshold(take_min=True, show=False, print_max_w=True, optimising_eta=0.96)
 
     adaptive_choose_failure = AdaptiveFailureBasisFusionDecoder(g)
     adaptive_choose_failure.build_tree()
@@ -952,6 +1233,20 @@ if __name__ == '__main__':
     plt.legend([1, 2, 3, 4])
     plt.show()
 
+    for decoder in [adaptive_choose_failure]:
 
-    # adaptive.plot_threshold(take_min=False)
+        bases = ['xrec', 'zrec', 'fusion']
+        pfails = np.linspace(0.2, 0.5)
+        eta = 0.98
+        prob_dict = {k: [] for k in bases}
+        for p in pfails:
+            out = decoder.get_probs_from_outcomes(eta=eta, pfail=p, w=1.)
+            for b in bases:
+                prob_dict[b].append(out[b])
+        for b in bases:
+            plt.plot(pfails, prob_dict[b])
+    plt.legend(bases*2)
+    plt.show()
+
+
 
