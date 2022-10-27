@@ -17,11 +17,9 @@ def gen_bipartitions(vals):
 def gen_stabs_new(stab_gens):
     """
     New implementation to do triviality testing - possibly a slow way of doing it
-    TODO Check out SMS's stabilizer tracking to generate NT stabilizers by tracking them as the graph is generated
     :param stab_gens:
     :return:
     """
-    print("NEW METHOD")
     stab_grp = {}
     triv = []
     non_triv = []
