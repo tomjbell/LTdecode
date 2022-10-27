@@ -289,11 +289,6 @@ class Strategy:
         return Strategy(self.pauli.copy(), self.t, s1_, s2_)
 
 
-def numpy_commutes(xz1, xz2):
-    out = xz1 @ (np.array([[0, 1], [1, 0]]) @ xz2).T
-    return bool((1 + np.trace(out)) % 2)
-
-
 def main():
     pass
 
