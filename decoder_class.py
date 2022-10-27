@@ -3,7 +3,7 @@ from pauli_class import Pauli, Strategy, multi_union
 from stab_formalism import is_compatible, stabilizers_from_graph, gen_strats_from_stabs, gen_logicals_from_stab_grp, \
     gen_stabs_from_generators, gen_stabs_new
 import numpy as np
-from error_correction import pauli_error_decoder, cascade_error_correction, best_checks, best_checks_max_clique
+from error_correction import pauli_error_decoder, cascade_error_correction, best_checks_max_clique, concat_error_correction
 from copy import deepcopy
 from time import time
 
@@ -24,14 +24,32 @@ class DecoderOutcome:
 
     def no_flip_prob(self, ps):
         if self.t is not None:
-            probs, confidences = pauli_error_decoder(self.target_paulis, self.checks, ps, ignore=(0, self.t))
+            probs, confidences = pauli_error_decoder(self.target_paulis, self.checks, ps, ignore=(0,))
         else:
             probs, confidences = pauli_error_decoder(self.target_paulis, self.checks, ps, ignore=(0,))
         return probs[0]
 
-    def outcome_prob(self, pxx, pxz, pzz, paa=None):
+    def no_flip_prob_concat(self, accuracies):
+        prob, confs = concat_error_correction(self.target_paulis, self.checks, accuracies, output_q=self.t)
+        return prob
+
+    def outcome_prob(self, pxx, pxz, pzz, paa=None, diff_y=False, pyy=None):
+        """
+        :param pxx:
+        :param pxz:
+        :param pzz:
+        :param paa:
+        :param diff_y:
+        :param pyy:
+        :return:
+        """
         counts = [val for val in self.counter.values()]
-        xx = yy = pxx
+        if diff_y:
+            assert pyy is not None
+            yy = pyy
+            xx = pxx
+        else:
+            xx = yy = pxx
         if paa is None:
             aa = pxx
         else:
@@ -39,11 +57,9 @@ class DecoderOutcome:
         zz = pzz
         azi = xzi = yzi = zzi = pxz
         af = 1 - aa - azi
-        xf = yf = 1 - xx - xzi
+        xf = 1 - xx - xzi
+        yf = 1 - yy - yzi
         zf = 1 - zz - zzi
-        # aa = xx = yy = zz = transmission
-        # af = xf = yf = zf = 1 - transmission
-        # azi = xzi = yzi = zzi = 0
         return xx ** counts[0] * xzi ** counts[1] * xf ** counts[2] * zz ** counts[3] * zzi ** counts[4] \
                * zf ** counts[5] * yy ** counts[6] * yzi ** counts[7] * yf ** counts[8] * aa ** counts[9] \
                * azi ** counts[10] * af ** counts[11]
@@ -146,9 +162,6 @@ class CascadeDecoder:
         :param mc: monte-carlo?
         :param error_correcting: Are we doing error detection?
         :param p: Physical transmission probability (if doing monte-carlo)
-        TODO add indirect z measurements to the error-correcting part
-        TODO return the indices of the indirect z measurement qubits to pass to the error correction part for cascading
-
         """
 
         if pathfinding:
@@ -226,9 +239,7 @@ class CascadeDecoder:
                 self.lt_finished, success = self.decoder_finished(pf=pathfinding)
                 if self.lt_finished:
                     break
-                # print(len(self.strategies_remaining))
                 self.strat = self.strategy_picker()
-                # print(self.strat.pauli.to_str())
                 self.target_pauli = self.strat.pauli
                 self.current_target = self.strat.t
                 self.cache_status(decoder_type)
@@ -265,7 +276,7 @@ class CascadeDecoder:
                 # Now try to do the Pauli measurements
                 q = self.next_qubit()
 
-                meas_type = measurement_type(self.target_pauli, q)
+                meas_type = self.target_pauli.get_meas_type(q)
 
                 good = self.next_meas_outcome(starting_point, first_traversal=first_traversal, mc=mc, p=p)
                 if good:
@@ -300,7 +311,6 @@ class CascadeDecoder:
             # Check if some of these have already been completed
             self.update_checks_completed()
 
-            # self.print_status()
             if len(self.ec_checks_to_do) == 0 or set(self.ec_pauli.support).issubset(set(self.pauli_done.support)):
                 self.ec_finished = True
             while not self.ec_finished:
@@ -330,7 +340,7 @@ class CascadeDecoder:
                 else:
                     # print(self.success_pattern)
                     q = self.next_qubit(ec=True)
-                    meas_type = measurement_type(self.ec_pauli, q)
+                    meas_type = self.ec_pauli.get_meas_type(q)
                     good = self.next_meas_outcome(starting_point, mc=mc, first_traversal=first_traversal, p=p)
                     if good:
                         self.success_pattern.append(1)
@@ -378,8 +388,6 @@ class CascadeDecoder:
         """
         For a bit string of previously attempted measurements, return the next measurement
         For mc decoding with different error models (Non-local etc.)
-        TODO finish this function
-        TODO test this function
         :return next qubit to measure, measurement basis, lt decoder finished, lt decoder successful, ec finished, ec checks done
         """
         self.set_params(success_bits, decoder_type)
@@ -396,7 +404,8 @@ class CascadeDecoder:
                     q = self.strat.t
                 else:
                     q = self.next_qubit(ec=self.lt_finished)
-                    meas_type = measurement_type(self.strat.pauli, q)
+                    meas_type = self.strat.pauli.get_meas_type(q)
+
                 checks_done = None
                 ec_finished = None
             else:
@@ -411,7 +420,8 @@ class CascadeDecoder:
                         self.ec_checks_to_do, self.ec_pauli = self.get_best_ec_strats()
                         # print([c.to_str() for c in self.ec_checks_to_do])
                         q = self.next_qubit(ec=True)
-                        meas_type = measurement_type(self.ec_pauli, q)
+                        meas_type = self.ec_pauli.get_meas_type(q)
+
                     checks_done = self.ec_checks_done
             return q, meas_type, self.lt_finished, self.lt_success, checks_done, ec_finished
 
@@ -556,7 +566,6 @@ class CascadeDecoder:
         want to ensure that as many qubits as possible in the pattern can be lost, and we can still switch to something else
         also want the patterns you switch to to satisfy these criteria - can do this to varying depth for more/less accurate
         decoding
-        TODO Calculate a score for each potential next measurement pattern to see how good it would be - do this to varying depths to have faster/slower and less/more accurate decoding for each potential measurement
         """
         current_winner = self.strategies_remaining[0]
         # print([a.pauli.to_str() for a in self.strategies_remaining])
@@ -613,9 +622,10 @@ class CascadeDecoder:
         return current_winner
 
     def update_checks_completed(self):
-        # print([c.to_str() for c in self.ec_checks_to_do])
-        # print([c.to_str() for c in self.ec_checks_done])
+        """
 
+        :return:
+        """
         nu_checks_completed = []
         nu_checks_to_do = []
         for check in self.ec_checks_to_do:
@@ -632,10 +642,6 @@ class CascadeDecoder:
                     nu_checks_to_do.append(check)
         self.ec_checks_to_do = nu_checks_to_do
         self.ec_checks_done += nu_checks_completed
-        # print([c.to_str() for c in self.ec_checks_to_do])
-        # print([c.to_str() for c in self.ec_checks_done])
-        # print(self.pauli_done.to_str())
-        # print('\n')
 
     def get_best_ec_strats(self, z_direct=False):
         """
@@ -673,7 +679,6 @@ class CascadeDecoder:
             self.build_tree(basis=basis, ec=ec, cascading=cascading)
         for r in self.successful_outcomes[basis]:
             k = tuple([v for v in r.counter.values()])
-            # print(k)
             if k in self.expr_dicts[basis].keys():
                 self.expr_dicts[basis][k] += 1
             else:
@@ -702,19 +707,8 @@ class CascadeDecoder:
                 tot_pauli_success += prob * no_flip
         if ec:
             tot_pauli_success_given_teleportation = tot_pauli_success / tot_prob
-            # print(tot_prob, tot_pauli_success, tot_pauli_success_given_teleportation)
             return tot_prob, tot_pauli_success_given_teleportation
         return tot_prob
-
-
-def measurement_type(pauli, ix):
-    if pauli.xs[ix]:
-        if pauli.zs[ix]:
-            return 'y'
-        else:
-            return 'x'
-    elif pauli.zs[ix]:
-        return 'z'
 
 
 class FastDecoder:
@@ -832,7 +826,8 @@ class FastDecoder:
                 # Now try to do the Pauli measurements
                 q = list(set(self.target_pauli.support) - set(self.pauli_done.support))[0]
 
-                meas_type = measurement_type(self.target_pauli, q)
+                # meas_type = measurement_type(self.target_pauli, q)
+                meas_type = self.target_pauli.get_meas_type(q)
 
                 good = self.next_meas_outcome(starting_point, first_traversal=first_traversal, mc=mc, p=p)
                 if good:
@@ -962,6 +957,7 @@ class FastDecoder:
             # print(f'{lowest_uncorrectable=}')
             weight = len(s.pauli.support)
             num_not_tolerant = 0
+            num_not_z = sum(s.pauli.xs)
             if s.t == self.current_target or self.current_target is None:
                 if weight > lowest_weight:
                     pass
@@ -988,13 +984,17 @@ class FastDecoder:
                         if weight < lowest_weight:
                             nu_winner = True
                         elif weight == lowest_weight:
-                            if av_weight_corr <= lowest_av_weight_correction:
+                            if av_weight_corr < lowest_av_weight_correction:
                                 nu_winner = True
+                            elif av_weight_corr == lowest_av_weight_correction:
+                                if num_not_z <= lowest_non_z:
+                                    nu_winner = True
                     if nu_winner:
                         current_winner = s
                         lowest_weight = len(s.pauli.support)
                         lowest_uncorrectable = num_not_tolerant
                         lowest_av_weight_correction = av_weight_corr
+                        lowest_non_z = num_not_z
         return current_winner
 
     def decoder_finished(self):
@@ -1044,31 +1044,9 @@ class FastDecoder:
              self.expr_dicts[basis].keys()])
 
 
-
-
-
 def main():
-    ts = np.linspace(0, 1)
-    g = gen_ring_graph(10)
-
-    # decoder = CascadeDecoder(g)
-    # decoder.build_tree(ec=False, cascading=False)
-    # plt.plot(ts, [decoder.success_prob_outcome_list(t, 0, ec=False) for t in ts])
-    #
-    # print(decoder.success_prob_outcome_list(0.9, depolarizing_noise=0, ec=False))
-
-    t = time()
-    fd = FastDecoder(g)
-    fd.get_dict()
-    print(time() - t)
-    plt.plot(ts, [fd.success_prob(t) for t in ts], '+')
-    plt.plot(ts, ts, 'k--')
-    plt.show()
-
-
+    pass
 
 
 if __name__ == '__main__':
-    from graphs import gen_ring_graph
-    import matplotlib.pyplot as plt
     main()
