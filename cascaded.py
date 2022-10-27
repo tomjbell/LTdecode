@@ -98,13 +98,14 @@ class AnalyticCascadedResult:
 
 
 class CascadedResultPauli:
-    def __init__(self, concat_result_list, cascade_ix=None, ec=True):
+    def __init__(self, concat_result_list, cascade_ix=None, ec=True, from_dict=False):
         """
         :param concat_result_list: concatenation of results lists, each one is a dictionary with keys spc, x, y, z, xy, direct_z
         and each value is a list of results
         :param epsilon_0:
         :param eta_0:
         """
+        self.from_dict = from_dict
         if cascade_ix is None:
             self.layer_map = lambda x: x
             self.max_depth = len(concat_result_list)
@@ -136,13 +137,27 @@ class CascadedResultPauli:
                self.pzz_[depth], self.pz_z_[depth], self.ex[depth], self.ey[depth], self.ez[depth], self.ezi[depth]
 
     def f_disentangle(self, pxx, pxz, pzz, k):
-        return sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)]['xy']])
+        if self.from_dict:
+            dx = self.results_lists[self.layer_map(k)]['x']
+            dy = self.results_lists[self.layer_map(k)]['y']
+            return max([p_from_dict(dict_b, pxx, pxz, pzz) for dict_b in (dx, dy)])
+        else:
+            return max([sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)]['x']]),
+                        sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)]['y']])])
 
     def f_z_indirect(self, pxx, pxz, pzz, k):
-        return sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)]['z']])
+        if self.from_dict:
+            dz = self.results_lists[self.layer_map(k)]['z']
+            return p_from_dict(dz, pxx, pxz, pzz)
+        else:
+            return sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)]['z']])
 
     def f_spc(self, pxx, pxz, pzz, k):
-        return sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)]['spc']])
+        if self.from_dict:
+            ds = self.results_lists[self.layer_map(k)]['spc']
+            return p_from_dict(ds, pxx, pxz, pzz)
+        else:
+            return sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)]['spc']])
 
     def get_all_params(self, eta, depolarising_noise, ec=True):
         self.ec = ec
@@ -208,7 +223,7 @@ class CascadedResultPauli:
         :return:
         """
         k = self.max_depth-maxdepth
-        print(self.pxx)
+        # print(self.pxx)
         if self.pxx[k] is None:
             raise ValueError('call get_all_params() first')
         # print('parameters to use = ' + str(k))
@@ -234,6 +249,14 @@ class CascadedResultPauli:
 
 class ConcatenatedResult:
     def __init__(self, concat_result_list, cascade_ix=None, ec=False):
+        """
+
+        :param concat_result_list: A list of outcome dictionaries, where each dictionary has the outcomes of
+        decoding in all bases for the graph at that depth, from which we can calculate effective error rates etc
+        :param cascade_ix: The order of the graphs in the cascade, so that we can search different cascades without
+        passing around additional performance dictionaries
+        :param ec:
+        """
         if cascade_ix is None:
             self.layer_map = lambda x: x
             self.max_depth = len(concat_result_list)
@@ -241,51 +264,99 @@ class ConcatenatedResult:
             self.layer_map = lambda x: cascade_ix[x]
             self.max_depth = len(cascade_ix)
         # print(f'{[self.layer_map(_) for _ in range(5)]=}')
+        self.ec = ec
         self.results_lists = concat_result_list
         self.px = [None] * self.max_depth
         self.pz = [0] * self.max_depth
         self.py = [0] * self.max_depth
         self.pa = [0] * self.max_depth
+        self.ex = [0] * self.max_depth
+        self.ey = [0] * self.max_depth
+        self.ez = [0] * self.max_depth
+        self.ea = [0] * self.max_depth
+
         self.eta = 1
+        self.error = None
 
     def get_var(self, depth):
-        return self.px[depth], self.py[depth], self.pz[depth], self.pa[depth]
+        if self.ec:
+            return self.px[depth], self.py[depth], self.pz[depth], self.pa[depth], self.ex[depth], self.ey[depth], \
+                   self.ez[depth], self.ea[depth]
+        else:
+            return self.px[depth], self.py[depth], self.pz[depth], self.pa[depth]
 
-    def f_disentangle(self, pxx, pzz, k):
-        return sum([r.outcome_prob(pxx, 0, pzz) for r in self.results_lists[self.layer_map(k)]['xy']])
+    def f_m_indirect(self, basis, pxx, pyy, pzz, paa, k, ex=None, ey=None, ez=None, ea=None):
+        if basis != 'spc':
+            ea = 0
+            paa = 0
+        if self.ec:
+            res_perfs = []  # This will be a list of tuples of the success probability and accuracy of each element in the results list
+            for r in self.results_lists[self.layer_map(k)][basis]:
+                prob = r.outcome_prob(pxx, 0, pzz, diff_y=True, pyy=pyy)
+                acc = r.no_flip_prob_concat((1-ex, 1-ey, 1-ez, 1-ea))
+                res_perfs.append((prob, acc))
+            prob_tot = sum([x[0] for x in res_perfs])
+            return prob_tot, sum([x[0] * x[1] for x in res_perfs]) / prob_tot
+        else:
+            return sum([r.outcome_prob(pxx, 0, pzz, paa=paa, diff_y=True, pyy=pyy) for r in
+                        self.results_lists[self.layer_map(k)][basis]])
 
-    def f_z_indirect(self, pxx, pzz, k):
-        return sum([r.outcome_prob(pxx, 0, pzz) for r in self.results_lists[self.layer_map(k)]['z']])
-
-    def f_spc(self, pxx, pzz, paa, k):
-        return sum([r.outcome_prob(pxx, 0, pzz, paa=paa) for r in self.results_lists[self.layer_map(k)]['spc']])
-
-    def calc_params(self, eta):
+    def calc_params(self, eta, error_prob=0):
+        """
+        Find all parameters of the concatenation, i.e. the logical error and loss rates at all levels
+        :param eta: Physical transmission rate
+        :param error_prob: The probability of each of the pauli errors (X, Y, Z) at the physical level
+                           In the paper this is called lambda
+        :return:
+        """
         self.eta = eta
+        self.error = error_prob
         for k in reversed(range(self.max_depth)):
             # print(f'{k=}')
             params_k = self.calculate_params(k)
-            self.px[k], self.py[k], self.pz[k], self.pa[k] = params_k
+            if self.ec:
+                self.px[k], self.py[k], self.pz[k], self.pa[k], self.ex[k], self.ey[k], self.ez[k], self.ea[k] = params_k
+            else:
+                self.px[k], self.py[k], self.pz[k], self.pa[k] = params_k
 
     def calculate_params(self, depth):
         if depth == self.max_depth - 1:
-            return self.eta, self.eta, self.eta, self.eta
+            if self.ec:
+                return self.eta, self.eta, self.eta, self.eta, 2 * self.error, 2 * self.error, 2 * self.error, 2 * self.error
+            else:
+                return self.eta, self.eta, self.eta, self.eta
         else:
-            px, py, pz, pa = self.get_var(depth+1)
-            # print(f'\n{pxz==pz_z=}\n')
+            if self.ec:
+                px, py, pz, pa, ex, ey, ez, ea = self.get_var(depth+1)
+                x, erx = self.f_m_indirect('x', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
+                y, ery = self.f_m_indirect('y', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
+                z, erz = self.f_m_indirect('z', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
+                a, era = self.f_m_indirect('spc', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
 
-            z = self.f_z_indirect(px, pz, depth + 1)
-            x = self.f_disentangle(px, pz, depth + 1)
-            a = self.f_spc(px, pz, pa, depth+1)
-            return x, x, z, a
+                return x, y, z, a, erx, ery, erz, era
+            else:
+                px, py, pz, pa = self.get_var(depth+1)
+                x = self.f_m_indirect('x', px, py, pz, pa, depth + 1)
+                y = self.f_m_indirect('y', px, py, pz, pa, depth + 1)
+                z = self.f_m_indirect('z', px, py, pz, pa, depth + 1)
+                a = self.f_m_indirect('spc', px, py, pz, pa, depth + 1)
+                return x, y, z, a
 
-    def teleportation_prob(self, eta):
-        self.calc_params(eta)
-        return self.f_spc(self.px[0], self.pz[0], self.pa[0], 0)
-
-    def xeff_prob(self, eta):
-        self.calc_params(eta)
-        return self.f_disentangle(self.px[0], self.pz[0], 0)
+    def meff_prob(self, basis, eta, error_p=0, depth=0, calc_params=True):
+        """
+        Note that here the depth refers to the depth how many layers there are above the qubit, so max depth
+        is actually a single layer graph, depth 0 is the deepest concatenation
+        :param eta:
+        :param depth:
+        :return:
+        """
+        if calc_params:
+            self.calc_params(eta, error_prob=error_p)
+        if self.ec:
+            return self.f_m_indirect(basis, self.px[depth], self.py[depth], self.pz[depth], self.pa[depth], depth,
+                                     self.ex[depth], self.ey[depth], self.ez[depth], self.ea[depth])
+        else:
+            return self.f_m_indirect(basis, self.px[depth], self.py[depth], self.pz[depth], self.pa[depth], depth)
 
 
 class ConcatenatedResultDicts:
@@ -312,23 +383,40 @@ class ConcatenatedResultDicts:
         return self.px[depth], self.py[depth], self.pz[depth], self.pa[depth]
 
     def get_func(self, expr):
-        def succ_prob(xx, xzi, xf, zz, zzi, zf, yy, yzi, yf, aa, azi, af):
-            return sum([expr[k] * xx ** k[0] * xzi ** k[1] * xf ** k[2] * zz ** k[3] * zzi ** k[4] * zf ** k[5]
-                        * yy ** k[6] * yzi ** k[7] * yf ** k[8] * aa ** k[9] * azi ** k[10] * af ** k[11] for k in
-                        expr.keys()])
+        if len(list(expr.keys())[0]) == 12:
+            def succ_prob(xx, xzi, xf, zz, zzi, zf, yy, yzi, yf, aa, azi, af):
+                return sum([expr[k] * xx ** k[0] * xzi ** k[1] * xf ** k[2] * zz ** k[3] * zzi ** k[4] * zf ** k[5]
+                            * yy ** k[6] * yzi ** k[7] * yf ** k[8] * aa ** k[9] * azi ** k[10] * af ** k[11] for k in
+                            expr.keys()])
+        elif len(list(expr.keys())[0]) == 8:
+            def succ_prob(xx, xzi, xf, zz, zzi, zf, yy, yzi, yf, aa, azi, af):
+                return sum([expr[k] * xx ** k[0] * xf ** k[1] * zz ** k[2] * zf ** k[3]
+                            * yy ** k[4] * yf ** k[5] * aa ** k[6] * af ** k[7] for k in
+                            expr.keys()])
+        else:
+            print(len(expr.keys()[0]))
+            raise ValueError
         return succ_prob
 
     def f_disentangle(self, pxx, pzz, k):
         fdis = self.get_func(self.results_dicts[self.layer_map(k)][4])
         return fdis(pxx, 0, 1 - pxx, pzz, 0, 1 - pzz, pxx, 0, 1 - pxx, 0, 0, 0)
 
-    def f_z_indirect(self, pxx, pzz, k):
-        fzi = self.get_func(self.results_dicts[self.layer_map(k)][3])
-        return fzi(pxx, 0, 1 - pxx, pzz, 0, 1 - pzz, pxx, 0, 1 - pxx, 0, 0, 0)
+    def f_x_indirect(self, pxx, pyy, pzz, k):
+        fx = self.get_func(self.results_dicts[self.layer_map(k)][1])
+        return fx(pxx, 0, 1 - pxx, pzz, 0, 1 - pzz, pyy, 0, 1-pyy, 0, 0, 0)
 
-    def f_spc(self, pxx, pzz, paa, k):
+    def f_y_indirect(self, pxx, pyy, pzz, k):
+        fy = self.get_func(self.results_dicts[self.layer_map(k)][2])
+        return fy(pxx, 0, 1 - pxx, pzz, 0, 1 - pzz, pyy, 0, 1-pyy, 0, 0, 0)
+
+    def f_z_indirect(self, pxx, pyy, pzz, k):
+        fzi = self.get_func(self.results_dicts[self.layer_map(k)][3])
+        return fzi(pxx, 0, 1 - pxx, pzz, 0, 1 - pzz, pyy, 0, 1 - pyy, 0, 0, 0)
+
+    def f_spc(self, pxx, pyy, pzz, paa, k):
         fdis = self.get_func(self.results_dicts[self.layer_map(k)][0])
-        return fdis(pxx, 0, 1 - pxx, pzz, 0, 1 - pzz, pxx, 0, 1 - pxx, paa, 0, 1-paa)
+        return fdis(pxx, 0, 1 - pxx, pzz, 0, 1 - pzz, pyy, 0, 1 - pyy, paa, 0, 1-paa)
 
     def calc_params(self, eta):
         self.eta = eta
@@ -344,17 +432,28 @@ class ConcatenatedResultDicts:
             px, py, pz, pa = self.get_var(depth+1)
             # print(f'\n{pxz==pz_z=}\n')
 
-            z = self.f_z_indirect(px, pz, depth + 1)
-            x = self.f_disentangle(px, pz, depth + 1)
-            a = self.f_spc(px, pz, pa, depth+1)
-            return x, x, z, a
+            z = self.f_z_indirect(px, py, pz, depth + 1)
+            x = self.f_x_indirect(px, py, pz, depth + 1)
+            y = self.f_y_indirect(px, py, pz, depth + 1)
+            a = self.f_spc(px, py,  pz, pa, depth+1)
+            return x, y, z, a
 
-    def teleportation_prob(self, eta):
-        self.calc_params(eta)
-        return self.f_spc(self.px[0], self.pz[0], self.pa[0], 0)
+    def meff_prob(self, eta, depth=0, basis='x', calc_params=True):
+        if calc_params:
+            self.calc_params(eta)
+        if basis == 'x':
+            return self.f_x_indirect(self.px[depth], self.py[depth], self.pz[depth], depth)
+        elif basis == 'y':
+            return self.f_y_indirect(self.px[depth], self.py[depth], self.pz[depth], depth)
+        elif basis == 'z':
+            return self.f_z_indirect(self.px[depth], self.py[depth], self.pz[depth], depth)
+        elif basis == 'spc':
+            return self.f_spc(self.px[depth], self.py[depth], self.pz[depth], self.pa[depth], depth)
+        else:
+            raise ValueError
 
-    def xeff_prob(self, eta):
-        self.calc_params(eta)
-        return self.f_disentangle(self.px[0], self.pz[0], 0)
 
+def p_from_dict(res_dict, pxx, pxz, pzz):
+    return sum([res_dict[key] * pxx ** (key[0] + key[6] + key[9]) * pxz ** (key[1] + key[7] + key[10]) * (1 - pxx - pxz) ** (key[2] + key[8] + key[11])
+                    * pzz ** key[3] * pxz ** key[4] * (1 - pzz - pxz) ** key[5] for key in res_dict.keys()])
 
