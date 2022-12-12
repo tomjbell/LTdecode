@@ -5,7 +5,6 @@ from stab_formalism import is_compatible, stabilizers_from_graph, gen_strats_fro
 import numpy as np
 from error_correction import pauli_error_decoder, cascade_error_correction, best_checks_max_clique, concat_error_correction
 from copy import deepcopy
-from time import time
 
 
 class DecoderOutcome:
@@ -19,7 +18,7 @@ class DecoderOutcome:
 
     def no_flip_prob_cascade(self, accuracies):
         prob, confs = cascade_error_correction(self.target_paulis, self.checks, 0, accuracies,
-                                               indirect_z_ixs=self.indirect_ixs)
+                                               indirect_z_ixs=self.indirect_ixs, output_q=self.t)
         return prob
 
     def no_flip_prob(self, ps):
@@ -70,7 +69,8 @@ class CascadeDecoder:
         self.nq = graph.number_of_nodes()
         self.graph = graph
         stab_generators = stabilizers_from_graph(graph)
-        self.stab_grp_t, self.stab_grp_nt = gen_stabs_new(stab_generators)
+        # self.stab_grp_t, self.stab_grp_nt = gen_stabs_new(stab_generators)
+        self.stab_grp_t, self.stab_grp_nt = gen_stabs_from_generators(stab_generators, split_triviality=True)
         self.q_lost = []
         self.purgatory_q = None  # If there is a qubit that has been lost, but we haven't tried to measure it indirectly yet
         self.purg_q_basis = None
@@ -672,17 +672,24 @@ class CascadeDecoder:
             print(f'{[c.to_str() for c in self.ec_checks_to_do]=}\n{[c.to_str() for c in self.ec_checks_done]=}\n')
         return
 
-    def get_dict(self, basis='spc', ec=False, rebuild_tree=False, cascading=True):
+    def get_dict(self, basis='spc', ec=False, rebuild_tree=False, cascading=True, condensed=False):
         self.expr_dicts[basis] = {}
         if len(self.successful_outcomes[basis]) == 0 or rebuild_tree:
             self.successful_outcomes[basis] = []
             self.build_tree(basis=basis, ec=ec, cascading=cascading)
         for r in self.successful_outcomes[basis]:
             k = tuple([v for v in r.counter.values()])
-            if k in self.expr_dicts[basis].keys():
-                self.expr_dicts[basis][k] += 1
+            if condensed:
+                if cascading:
+                    dict_k = (sum(k[0::3]), sum(k[1::3]), sum(k[2::3]))
+                else:
+                    dict_k = (sum(k[0::3]), sum(k[2::3]))
             else:
-                self.expr_dicts[basis][k] = 1
+                dict_k = k
+            if dict_k in self.expr_dicts[basis].keys():
+                self.expr_dicts[basis][dict_k] += 1
+            else:
+                self.expr_dicts[basis][dict_k] = 1
         return self.expr_dicts[basis]
 
     def success_prob(self, xx, xzi, xf, zz, zzi, zf, yy, yzi, yf, aa, azi, af, basis='spc'):

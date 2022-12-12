@@ -6,7 +6,7 @@ from networkx import Graph
 from decoder_class import FastDecoder, CascadeDecoder
 import numpy as np
 from error_correction import best_checks_max_clique, pauli_error_decoder
-from logical_fusions import get_fusion_peformance, fusion_threshold_from_dict
+from logical_fusions import get_fusion_performance, fusion_threshold_from_dict
 
 
 def graph_from_edges(edges):
@@ -74,7 +74,7 @@ def graph_perf_cascading(edges):
 
 def graph_perf_fusion(edges):
     g = graph_from_edges(edges)
-    perf_dicts = get_fusion_peformance(g, decoder_type='ACF')
+    perf_dicts = get_fusion_performance(g, decoder_type='ACF')
     thresh = fusion_threshold_from_dict(perf_dicts, pf=0.5, take_min=False)
     return edges, perf_dicts, thresh
 

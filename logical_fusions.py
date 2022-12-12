@@ -91,7 +91,7 @@ class FusionDecoder:
         except ValueError:
             threshold = 1
         # print(1-threshold)
-        return threshold  #TODO also get w_max??
+        return threshold
 
     def plot_threshold(self, n_points=27, pthresh=0.88, optimising_eta=0.96, show=True, w=None, line='--', take_min=True, print_max_w=False, no_w=False):
         pfails = np.linspace(0.001, 0.5, n_points)
@@ -287,7 +287,6 @@ class DiffBasisTransversalDecoder(FusionDecoder):
         """
         Create a dictionary that tells us how we fail on each qubit - precompile this dictionary
         The performance of the decoder will be dependent on how well this function chooses optimal failure bases.
-        TODO Prioritise low weight measurements?
         :param picker: 'maxmin', 'maxone' or 'sum'
         :return:
         """
@@ -328,7 +327,6 @@ class DiffBasisTransversalDecoder(FusionDecoder):
     def decode(self, picker='maxmin'):
         """
         Initialise all sets of possibilities and see if we recover fusion, logical x or logical z
-        TODO Try removing operators from list as you go through qubits to see if this is faster
         :return:
         """
         self.failure_bases = self.choose_failure_bases(picker=picker)
@@ -585,7 +583,7 @@ class AdaptiveFusionDecoder(FusionDecoder):
                     if self.pauli_done.contains_other(x_log.pauli, exclude=self.fused_qubits):
                         self.xlog_measured = True
                         # try:
-                        #     assert not self.p_log_remaining[1]  #TODO maybe print here
+                        #     assert not self.p_log_remaining[1]
                         # except AssertionError:
                         #     self.print_status()
                         #     exit()
@@ -801,7 +799,7 @@ class AdaptiveFusionDecoder(FusionDecoder):
 
 
 class AdaptiveFailureBasisFusionDecoder(AdaptiveFusionDecoder):
-    # TODO merge this functionality in to the parent class
+    # This strategy tries to choose optimal fusion failure bases, as opposed to random ones
     def __init__(self, graph):
         super(AdaptiveFailureBasisFusionDecoder, self).__init__(graph)
         self.counter = {'x': 0, 'xf': 0, 'y': 0, 'yf': 0, 'z': 0, 'zf': 0, 'fusion': 0, 'ffx': 0, 'ffy': 0, 'ffz': 0, 'floss':0}
@@ -1016,7 +1014,7 @@ class AnalyticShor22(FusionDecoder):
     def __init__(self):
         super(AnalyticShor22, self).__init__()
 
-    def get_probs_from_outcomes(self, eta, pfail, max_w):
+    def get_probs_from_outcomes(self, eta, pfail, w):
         p0 = 1 - (1 - 0.5 * pfail) * eta ** (1/pfail)
         penc = 1 - 0.5 * ((1 - (1 - p0) ** 2) ** 2 + 1 - (1 - p0 ** 2) ** 2)
         prob_dict = {'fusion': None, 'xrec': penc, 'zrec': penc}
@@ -1048,7 +1046,7 @@ def best_graphs_func(n=None, shor=False):
     return g
 
 
-def get_fusion_peformance(g, decoder_type='ACF', printing=False):
+def get_fusion_performance(g, decoder_type='ACF', printing=False):
     """"
     Write a function which will retrun the results dictionaries for a given graph in a given decoder
     :param g: The graph to analyse (nx.Graph)
@@ -1212,41 +1210,4 @@ def fusion_threshold_from_dict(dict, pf, take_min=True, pthresh=0.88, decoder_ty
 
 
 if __name__ == '__main__':
-    g = gen_ring_graph(5)
-    g = best_graphs_func(7)
-    draw_graph(g)
-    db_dec = DiffBasisTransversalDecoder(g)
-    db_dec.decode(picker='maxmin')
-    db_dec.plot_threshold(show=False, w=0, take_min=True)
-
-    t_dec = TransversalFusionDecoder(g)
-    t_dec.fbqc_decode()
-    t_dec.plot_threshold(show=False, take_min=True, print_max_w=True, optimising_eta=0.97, n_points=9)
-    #
-    adaptive = AdaptiveFusionDecoder(g)
-    adaptive.build_tree()
-    adaptive.plot_threshold(take_min=True, show=False, print_max_w=True, optimising_eta=0.96)
-
-    adaptive_choose_failure = AdaptiveFailureBasisFusionDecoder(g)
-    adaptive_choose_failure.build_tree()
-    adaptive_choose_failure.plot_threshold(take_min=True, no_w=True, show=False)
-    plt.legend([1, 2, 3, 4])
-    plt.show()
-
-    for decoder in [adaptive_choose_failure]:
-
-        bases = ['xrec', 'zrec', 'fusion']
-        pfails = np.linspace(0.2, 0.5)
-        eta = 0.98
-        prob_dict = {k: [] for k in bases}
-        for p in pfails:
-            out = decoder.get_probs_from_outcomes(eta=eta, pfail=p, w=1.)
-            for b in bases:
-                prob_dict[b].append(out[b])
-        for b in bases:
-            plt.plot(pfails, prob_dict[b])
-    plt.legend(bases*2)
-    plt.show()
-
-
-
+    pass

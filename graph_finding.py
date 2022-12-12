@@ -14,7 +14,7 @@ from itertools import combinations, groupby, permutations, product
 from multiprocessing import Pool
 import bz2
 from tqdm import tqdm
-from logical_fusions import get_fusion_peformance, fusion_threshold_from_dict
+from logical_fusions import get_fusion_performance, fusion_threshold_from_dict
 from tree_analytics import best_tree_data
 from functools import partial
 
@@ -328,7 +328,7 @@ def graph_perf_fusion(graph_info):
     class_size = graph_info[0]
     edges = graph_info[1]
     g = graph_from_edges(edges)
-    perf_dicts = get_fusion_peformance(g, decoder_type='ACF')
+    perf_dicts = get_fusion_performance(g, decoder_type='ACF')
     thresh = fusion_threshold_from_dict(perf_dicts, pf=0.5, take_min=False)
     return edges, perf_dicts, thresh
 
