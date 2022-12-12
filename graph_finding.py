@@ -10,7 +10,7 @@ from graphs import gen_linear_graph, gen_ring_graph, gen_star_graph, draw_graph,
 from helpers import load_obj, save_obj, bisection_search, get_size
 from random import randrange, choice, random, randint
 from time import time
-from itertools import combinations, groupby, permutations
+from itertools import combinations, groupby, permutations, product
 from multiprocessing import Pool
 import bz2
 from tqdm import tqdm
@@ -31,34 +31,6 @@ def tot_q(concat, type='cascaded'):
         return sum(layer_tots) - 1
     elif type == 'concatenated':
         return layer_tots[-1]
-
-
-def fit_best_trees(capture, deg, max_x=None):
-    path_to_data = os.getcwd() + '/stef_data'
-    for i in os.listdir(path_to_data):
-        if os.path.isfile(os.path.join(path_to_data, i)) and i.startswith(
-                f"TreeGraph_LTvsQubitNum_random_t{capture}_MaxLayers"):
-            print(i)
-            tree_data = np.loadtxt(open(os.path.join(path_to_data, i), "rb"), delimiter=",")
-            print(tree_data)
-            xdat, ydat = [], []
-            for i in range(len(tree_data[0, :])):
-                logx = np.log(tree_data[0, :][i])
-                logy = np.log(tree_data[1, :][i])
-                if max_x is None or logx < max_x:
-                    xdat.append(logx)
-                    ydat.append(logy)
-            fit = np.polyfit(xdat, ydat, deg=deg)
-    return fit
-
-
-def plot_best_trees(capture):
-    """From the datafiles in data plot the best tree graph performance for given loss"""
-    path_to_data = os.getcwd() + '/stef_data'
-    for i in os.listdir(path_to_data):
-        if os.path.isfile(os.path.join(path_to_data, i)) and i.startswith(f"TreeGraph_LTvsQubitNum_random_t{capture}_MaxLayers"):
-            tree_data = np.loadtxt(open(os.path.join(path_to_data, i), "rb"), delimiter=",")
-            plt.plot(tree_data[0, :], tree_data[1, :], 's-')
 
 
 def test_random_graphs(n, n_samples=4):
@@ -98,17 +70,6 @@ def test_random_graphs(n, n_samples=4):
         plt.plot(etas, [r.get_spc_prob(t, 0) for t in etas])
     plt.plot((0, 1), (0, 1), 'k--')
     plt.show()
-
-
-def analyse_graph(edges, n):
-    g = nx.Graph()
-    g.add_nodes_from(list(range(n)))
-    g.add_edges_from(edges)
-
-    x = CascadeDecoder(g)
-    bases = ['spc', 'x', 'y', 'z', 'xy']
-    spc, xr, yr, zr, xyr = [x.get_dict(basis=b) for b in bases]
-    return edges, spc, xr, yr, zr, xyr
 
 
 def gen_non_isomorphic_graphs(edge_list_in):
@@ -163,21 +124,10 @@ def permute_input_qubit(edge_list, in_ix):
         return edge_list_permuted
 
 
-def inspect_class(lc_class, n):
-    c=1
-    class_size = len(lc_class)
-    result = []
-    for graph in lc_class:
-        print(f'inspecting graph {c}/{class_size}')
-        c += 1
-        result.append(analyse_graph(graph, n))
-    return result
-
-
 def get_best_perf(min_q, max_q, eta=0.99, find_threshold=False, prefix_num=None, printing=True, graph_data_12q=False, pauli=False, subdirname=None):
     """
-    Find the best spc graphs for the top layer.
-    Because we are only looking at one layer only consider one representative graph from each class
+    Find the graphs with optimal subthreshold and threshold performance for the specified measurement type
+    Every graph should have been decoded already, this function scans over the results dictionaries
     Find threshold and subthreshold performance, and code distance
     """
     best_graphs_dict = {}
@@ -216,7 +166,14 @@ def get_best_perf(min_q, max_q, eta=0.99, find_threshold=False, prefix_num=None,
 
         ix = 0
         for file in filenames:
-            list_of_dicts = load_obj(file, path)
+            try:
+                list_of_dicts = load_obj(file, path)
+            except EOFError:
+                break
+            except FileExistsError:
+                break
+            except FileNotFoundError:
+                break
             if printing:
                 print(f"Graphs loaded, filesize={get_size(list_of_dicts)}")
             for graph in list_of_dicts:
@@ -267,147 +224,6 @@ def get_best_perf(min_q, max_q, eta=0.99, find_threshold=False, prefix_num=None,
         best_graphs_dict[n] = (best_subthresh_graph, max_subthresh, best_threshold_graph, min_threshold, best_dist_graph, max_dist)
         print(best_graphs_dict[n])
     return best_graphs_dict
-
-
-def gen_data_points(n_samples=100, t=0.9, min_q=3, max_q=9, max_depth=4, biased=False, trees_only=False, lc_equiv=False,
-                    best_top_layer_only=True, only_winning_graphs=True, concatenated=False):
-    if best_top_layer_only:
-        bests = get_best_perf(min_q, max_q, eta=t)
-    if only_winning_graphs:
-        fit_func = get_fit_func(t)
-    n_qubit_lists = {}
-    x = []
-    y = []
-    best_graphs = []
-    for n in range(min_q, max_q + 1):
-        path = os.getcwd() + '/LC_equiv_graph_data'
-        if lc_equiv:
-            name = f'{n}QubitResultDicts_incl_equiv'
-        else:
-            name = f'{n}QubitResultDicts'
-        list_of_dicts = load_obj(name, path)
-        n_qubit_lists[n] = list_of_dicts
-    print([len(n_qubit_lists[i]) for i in range(min_q, max_q+1)])
-    for i in range(n_samples):
-
-        # pick a random number of qubits for each layer of the graph
-        #TODO bias by the number of graphs there are at each qubit number?
-        if biased:
-            nu = [np.sqrt(x) for x in range(min_q, max_q+1)]
-            tot = sum(nu)
-            scaled = [x/tot for x in nu]
-            ixs = list(np.random.choice(len(scaled), size=max_depth, replace=True, p=scaled))
-            q_num_list = [min_q + ix for ix in ixs]
-        else:
-            q_num_list = [randrange(min_q, max_q+1) for _ in range(max_depth)]
-
-        # Pick random graphs of each qubit number
-        if trees_only and not best_top_layer_only:
-            graph_dict_lists = [n_qubit_lists[q][0][1:] for q in q_num_list]  # The first graphs are ghz i.e. trees
-        elif trees_only and best_top_layer_only:
-            # print(bests[q_num_list[0]][1:])
-            graph_dict_lists = [bests[q_num_list[0]][1:]] + [n_qubit_lists[q][0][1:] for q in q_num_list[1:]]
-        elif not trees_only and best_top_layer_only:
-            graph_dict_lists = [bests[q_num_list[0]][1:]] + [n_qubit_lists[q][randrange(0, len(n_qubit_lists[q]))][1:] for q in q_num_list[1:]]
-        else:
-            graph_dict_lists = [n_qubit_lists[q][randrange(0, len(n_qubit_lists[q]))][1:] for q in q_num_list]
-
-        n_extra_layers = [i for i in range(max_depth)]
-        if concatenated:
-            for d in n_extra_layers:
-                r = ConcatenatedResultDicts(graph_dict_lists, cascade_ix=list(range(d+1)))
-                eff_loss = 1 - r.teleportation_prob(t)
-                nq = tot_q(q_num_list[:d+1], type='concatenated')
-                if not only_winning_graphs or eff_loss < fit_func(nq):
-                    x.append(nq)
-                    y.append(eff_loss)
-                    if q_num_list[:d+1] not in best_graphs:
-                        best_graphs.append(q_num_list[:d+1])
-
-        else:
-            r = AnalyticCascadedResult(graph_dict_lists)
-            layer_y = []
-            for d in n_extra_layers:
-                eff_loss = 1 - r.get_spc_prob(t, depth=d + 1)
-                nq = tot_q(q_num_list[:d+1])
-                if not only_winning_graphs or eff_loss < fit_func(nq):
-                    x.append(nq)
-                    y.append(eff_loss)
-                    if q_num_list[:d+1] not in best_graphs:
-                        best_graphs.append(q_num_list[:d+1])
-
-    plot_best_trees(t)
-    plt.plot(x, y, '+')
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.xlabel('Number of qubits')
-    plt.ylabel('Effective loss')
-    plt.xlim(1.9, 1000)
-    plt.ylim(1e-11, 1-t + 0.01)
-    plt.plot((0, 10000), (1-t, 1-t), 'k--')
-    plt.title(r'$\eta$ = ' + str(t))
-    plt.savefig('Concatenated_vs_trees')
-    plt.show()
-    print(best_graphs)
-    print(set(y))
-
-
-def testing_trees(n_samples=100, t=0.9, min_q=2, max_q=10, max_depth=6, enforce_pattern=False):
-    res_dict = {}
-    for n in range(min_q, max_q+1):
-        print('calculating graph n = ', n)
-        graph = gen_star_graph(n)
-
-        x = CascadeDecoder(graph)
-        spc, x, y, z, xy = [x.get_dict(basis=b) for b in ['spc', 'x', 'y', 'z', 'xy']]
-        res_dict[n] = (spc, x, y, z, xy)
-
-    x = []
-    y = []
-    dict_list = [res_dict[n] for n in range(min_q, max_q+1)]
-    if enforce_pattern:
-        n_samples=1
-    for i in range(n_samples):
-        if enforce_pattern:
-            q_list = enforce_pattern
-        else:
-            # Generate random list of graph sizes
-            q_list = [randrange(min_q, max_q+1) for _ in range(max_depth)]
-        ix_list = [q-min_q for q in q_list]
-
-        n_extra_layers = [i for i in range(max_depth)]
-        r = AnalyticCascadedResult(dict_list, ix_list)
-        # r = AnalyticCascadedResult(gtop[0], gbot[1], gbot[2], gbot[3], gbot[4])
-        layer_y = []
-        for d in n_extra_layers:
-            eff_loss = 1 - r.get_spc_prob(t, depth=d + 1)
-            y.append(eff_loss)
-            layer_y.append(eff_loss)
-            x.append(tot_q(q_list[:d+1]))
-        print(q_list, layer_y, x)
-    plot_best_trees(t)
-    plt.plot(x, y, '+')
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.xlabel('Number of qubits')
-    plt.ylabel('Effective loss')
-    plt.show()
-
-
-def get_fit_func(eta):
-    """
-    Get an expression for the best trees curve so you can look at only the graphs that win
-    """
-    deg = 5
-    fit = fit_best_trees(eta, deg=deg, max_x=9)
-
-    def fit_func(n_q):
-        x = np.log(n_q)
-        y = 0
-        for i in range(deg + 1):
-            y += fit[i] * x ** (deg - i)
-        return np.exp(y)
-    return fit_func
 
 
 def read_data_from_bz2(line_start, lines_stop, filename, path_to_file):
@@ -467,10 +283,6 @@ def txt_to_edge_data(filename):
     return output
 
 
-def main():
-    pass
-
-
 def graph_perf_spc_only(graph_info):
     class_size = graph_info[0]
     edges = graph_info[1]
@@ -517,7 +329,7 @@ def graph_perf_fusion(graph_info):
     edges = graph_info[1]
     g = graph_from_edges(edges)
     perf_dicts = get_fusion_peformance(g, decoder_type='ACF')
-    thresh = fusion_threshold_from_dict(perf_dicts, pf=0.5)
+    thresh = fusion_threshold_from_dict(perf_dicts, pf=0.5, take_min=False)
     return edges, perf_dicts, thresh
 
 
@@ -589,6 +401,14 @@ def get_graph_perf_dicts(n, spc_only=True, mp=False, cascading=False, fusion=Fal
 
 
 def get_distance(spcr, plot=True, show_plot=True):
+    """
+    Get the gradient of the logical-physical loss curve at low losses
+    This is equal to the fewest number of losses that can not be tolerated (in the worst-case)
+    :param spcr:
+    :param plot:
+    :param show_plot:
+    :return:
+    """
     low_loss_etas = np.linspace(0.9, 0.9999)
     r = FastResult(spcr)
     eta_log = [r.get_spc_prob(t) for t in low_loss_etas]
@@ -823,7 +643,7 @@ def best_cascade_graphs():
                               'thresh': {n: None for n in range(5, 12)}}
     best_graphs_casc_spf = {'subthresh': {n: None for n in range(5, 12)}, 'thresh': {n: None for n in range(5, 12)}}
 
-    indices = load_obj('indices_of_bests_5-11', os.getcwd())
+    indices = load_obj('indices_of_bests_5-11_dated_11_10', os.getcwd()+'/best_graphs')
 
     for n in range(5, 12):
         if n < 10:
@@ -856,48 +676,177 @@ def best_cascade_graphs():
                 best_graphs_casc_spf[g_type][n] = graph_perf_cascading(spf_g_edges)
 
     full = {'spf': best_graphs_casc_spf, 'pauli': best_graphs_casc_pauli}
-    save_obj(full, 'cascaded_perf_best_graphs_5-11', os.getcwd() + '/best_graphs')
+    # save_obj(full, 'cascaded_perf_best_graphs_5-11_new_data', os.getcwd() + '/best_graphs')
 
 #################################################################################################################
 
 
-if __name__ == '__main__':
+def test_best_cascades_all_combos(from_file=True):
+    """
+    Test all combinations of the graphs that performed optimally for single layers in cascades to find their overall
+    loss tolerance.
+    :return:
+    """
+    n_cores = 10
+    multiproc = True
+
+    a = {1: 'spc', 2: 'x', 3: 'y', 4: 'z'}
+    md = 4
+    etas = [0.8, 0.9, 0.95, 0.99]
+
+    if not from_file:
+        casc_dicts = load_obj('cascaded_perf_best_graphs_5-11_new_data', os.getcwd() + '/best_graphs')
+        sthr = [(key, {a[ix]: value[ix] for ix in a.keys()}) for key, value in
+                casc_dicts['spf']['subthresh'].items()] + [
+                   (key, {a[ix]: value[ix] for ix in a.keys()}) for key, value in
+                   casc_dicts['pauli']['subthresh'].items()]
+        thr = [(key, {a[ix]: value[ix] for ix in a.keys()}) for key, value in casc_dicts['spf']['thresh'].items()] + [
+            (key, {a[ix]: value[ix] for ix in a.keys()}) for key, value in casc_dicts['pauli']['thresh'].items()]
+        extras_2_4 = []
+        for q_num in range(2, 5):
+            x = load_obj(f'{q_num}_qubit_graphs_ordered_num_in_class', os.getcwd() + '/data/uib_data')
+            for g in x:
+                perf = graph_perf_cascading(g[1])
+                extras_2_4.append((q_num, {a[ix]: perf[ix] for ix in a.keys()}))
+
+        to_test = []
+        for combo in product(sthr + thr + extras_2_4, repeat=md):
+            # for combo in product(sthr, repeat=md):
+            to_test.append(combo)
+
+        if multiproc:
+        # to_mp_test = [to_test[:n_items // 3], to_test[n_items // 3: 2 * n_items // 3], to_test[2 * n_items // 3:]]
+
+            to_mp_test = [list(x) for x in np.array_split(to_test, n_cores)]
+            t0 = time()
+            with Pool(n_cores) as p:
+                res = p.map(partial(casc_perf, etas=etas, do_perms=False, spc_only=True), to_mp_test)
+            print(time() - t0)
+
+            tot_dict = {eta: {'spc': []} for eta in etas}
+            for item in res:
+                for eta in etas:
+                    tot_dict[eta]['spc'] += item[eta]['spc']
+            save_obj(tot_dict, f'perf_under_cascading_depth{md}_2-11_eta_8_9_95_99', os.getcwd() + '/data/cascaded')
+
+        else:
+            t0 = time()
+            tot_dict = casc_perf(to_test, etas, do_perms=False, spc_only=True)
+            print(time() - t0)
+            # save_obj(best_spc_res, f'perf_under_cascading_depth{md}_2-11_eta_8_9_95', os.getcwd())
+    else:
+        tot_dict = load_obj(f'perf_under_cascading_depth{md}_2-11_eta_8_9_95_99', os.getcwd() + '/data/cascaded')
+
+    for eta in etas:
+        casc_dat = tot_dict[eta]['spc']
+        casc_dat_ordered = sorted(casc_dat, key=lambda q: q[0])
+        bests = []
+        min_loss = 1
+        for d in casc_dat_ordered:
+            if 1 - d[1] < min_loss:
+                bests.append(d)
+                min_loss = 1 - d[1]
+
+        best_tree_data(eta, 13, 5, plot=True, from_file=True, show=False)
+        plt.plot([b[0] for b in bests], [1 - b[1] for b in bests], '+')
+        plt.xlim(0.8, 100)
+        plt.ylim(0.0001, 0.2)
+        plt.show()
+
+
+def get_plot_cascaded_pentagons():
+    losses = np.linspace(0, 0.6)
+    bases = ['spc', 'x', 'y', 'z', 'xy']
+    g5 = gen_ring_graph(5)
+    dec = CascadeDecoder(g5)
+    ds = [dec.get_dict(b) for b in bases]
+
+    res = ConcatenatedResultDicts([ds]*5)
+
+    legend = []
+    colors = plt.cm.inferno(np.linspace(0.2, 0.8, 5))
+    plt.rcParams.update({'font.size': 12})
+    fig = plt.figure(figsize=(5.9, 4))
+
+    for depth in range(4, -1, -1):
+        plt.plot(losses, [1 - res.meff_prob(1-l, depth, basis='spc') for l in losses], color=colors[4-depth], linewidth=2)
+        legend.append(5-depth)
+    plt.plot(losses, losses, 'k--', linewidth=2)
+    legend.append('Direct trans.')
+
+    plt.legend(legend, loc='lower right')
+    plt.xlabel(r'Physical loss')
+    plt.ylabel(r'Logical loss $\overline{\ell}$', rotation=90)
+    plt.tight_layout()
+
+    plt.savefig('Concatenated_pentagon', dpi=200)
+    plt.show()
+
+
+def parallel_bit(f):
+    best_subthresh_graph = None
+    best_threshold_graph = None
+    best_dist_graph = None
+    max_subthresh = 0
+    min_threshold = 1
+    max_dist = 1
+    path = os.getcwd() + f'/graphs_batched_12q'
+
+    try:
+        list_of_dicts = load_obj(f, path)
+        print(f)
+        for graph in list_of_dicts:
+            edges = graph[0]
+            xr = graph[1]
+            yr = graph[2]
+            zr = graph[3]
+            results = [xr, yr, zr]
+
+            subthresh, threshold, distance = [], [], []
+            for basis_r in results:
+                r = FastResult(basis_r)
+
+                # Find threshold
+                def func(t):
+                    return r.get_spc_prob(t) - t
+
+                try:
+                    thresh = bisection_search((0.4, 0.98), func)
+                except ValueError:
+                    # print('NO ROOT')
+                    thresh = 1
+                threshold.append(thresh)
+                # Get subthreshold performance
+                spc = r.get_spc_prob(0.99)
+                subthresh.append(spc)
+                l1e3 = 1 - r.get_spc_prob(1 - 0.001)
+                l1e5 = 1 - r.get_spc_prob(1 - 0.00001)
+                dist = (np.log10(l1e3) - np.log10(l1e5)) / 2
+                distance.append(dist)
+            d = min(distance)
+            st = min(subthresh)
+            t = max(threshold)
+            if d > max_dist:
+                best_dist_graph = (edges, results[:])
+                max_dist = d
+            if t <= min_threshold:
+                min_threshold = t
+                best_threshold_graph = (edges, results[:])
+            if st > max_subthresh:
+                best_subthresh_graph = (edges, results[:])
+                max_subthresh = st
+    except EOFError:
+        pass
+    except FileExistsError:
+        pass
+    except FileNotFoundError:
+        pass
+    return best_subthresh_graph, max_subthresh, best_threshold_graph, min_threshold, best_dist_graph, max_dist
+
+
+def main():
     pass
 
 
-    ######################## THE FOLLOWING IS FOR DOING MULTIPROCCESSING OF CONCATENATED GRAPH SEARCH ############
-
-    # minq = 4
-    # maxq = 9
-    # n_shot_in = 1000
-    # n_shot_out = 10
-    # ks = list(range(n_shot_out))
-    # max_depth = 5
-    # etas = (0.7, 0.8, 0.9, 0.95, 0.99)
-    # bases = ['spc', 'x', 'y', 'z']
-    # out_dicts_global = {eta: {b: [] for b in bases} for eta in etas}
-    # t = time()
-    # with Pool(n_shot_out) as p:
-    #     out = p.map(partial(per_round, min_q=minq, max_q=maxq, etas=etas, n_shots=n_shot_in, max_depth=max_depth), ks)
-    # print(time() - t)
-    # for item in out:
-    #     for key in item:
-    #         for b in bases:
-    #             # print(key, out_dicts_global[key])
-    #
-    #             out_dicts_global[key][b] += item[key][b]
-    #
-    # for eta in etas:
-    #     best_tree_data(eta, 13, 5, plot=True, show=False, from_file=True)
-    #     for basis in ['spc']:
-    #         data_full = out_dicts_global[eta][basis]
-    #         # print(data_full)
-    #         plt.plot([b[0] for b in data_full], [1 - b[1] for b in data_full], '+')
-    #         plt.title(f'{basis=}, {eta=}')
-    #     plt.show()
-
-    ################################################################################################################
-
-
-
-
+if __name__ == '__main__':
+    main()
