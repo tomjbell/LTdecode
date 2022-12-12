@@ -9,7 +9,6 @@ from networkx.algorithms.clique import find_cliques as maximal_cliques
 
 def concat_error_correction(targets, checks, meas_accuracies, output_q=None, printing=False):
     """
-
     :param targets:
     :param checks:
     :param meas_accuracies:
@@ -20,7 +19,10 @@ def concat_error_correction(targets, checks, meas_accuracies, output_q=None, pri
     # find the set of qubits that have been measured and are hence vulnerable to errors
     total_paulis_done = multi_union(targets + checks)
     qubits_with_error = total_paulis_done.support
+    if output_q is not None:
+        qubits_with_error.append(output_q)
     n_err_q = len(qubits_with_error)
+    # print(output_q, qubits_with_error, [t.to_str() for t in targets], [c.to_str() for c in checks])
 
     # Create a dictionary that tells us what type of measurement was done on each qubit, so we can assign probabilities
     meas_type_to_ix = {'x': 0, 'y': 1, 'z': 2, 'spc': 3}
@@ -51,8 +53,8 @@ def concat_error_correction(targets, checks, meas_accuracies, output_q=None, pri
         prob = p_error_pattern(error_ixs)
         # 2 Find the syndrome
         syndrome = tuple([sum([x in ch.support for x in error_ixs]) % 2 for ch in checks])
-        # 3 Find the error pattern
-        error = tuple([sum([x in t.support for x in error_ixs]) % 2 for t in targets])
+        # 3 Find the error pattern - Also include the output qubit if arbitrary basis
+        error = tuple([(sum([x in t.support for x in error_ixs]) + int(output_q in error_ixs)) % 2 for t in targets])
         if printing:
             print(f'{flip_pat=}')
             print(f'{error_ixs=}')
@@ -77,13 +79,10 @@ def concat_error_correction(targets, checks, meas_accuracies, output_q=None, pri
     return win_prob, confidence
 
 
-
 def cascade_error_correction(targets, checks, p0, meas_accuracies, indirect_z_ixs=None, ignore_qs=None, lost_qubits=None,
-                             printing=False):
+                             printing=False, output_q=None):
     """
     This function can deal with indirect z measurements on check or target qubits
-    TODO make sure the indirect z measurements are on the correct qubits - it makes a difference whether they are
-    TODO on the target or check operators
     :param targets: The target Pauli operator that we want to check
     :param checks: The set of Pauli check operators we will use to check the target operator
     :param p0: The bare measurement accuracy
@@ -98,18 +97,20 @@ def cascade_error_correction(targets, checks, p0, meas_accuracies, indirect_z_ix
     # find the set of qubits that have been measured and are hence vulnerable to errors
     total_paulis_done = multi_union(targets + checks)
     qubits_with_error = total_paulis_done.support
+    # if output_q is not None:
+    #     qubits_with_error.append(output_q)
     n_err_q = len(qubits_with_error)
 
     # for each qubit in the support we want to find the type of measurement that was performed upon it.
-    # It doesn't strictly matter as to the ordering, just need to assign a probability to each error pattern
-    # TODO the ordering does matter - errors on indirect Z measurements are more likely than on direct, and it
-    # TODO is important to know if the measurements are on the targets or checks
-    meas_type_to_ix = {'x': 0, 'y': 1, 'z': 2, 'zi': 3}
+    meas_type_to_ix = {'x': 0, 'y': 1, 'z': 2, 'zi': 3, 'a': 4}  # The arbitrary basis measurement succeeds with the same probability as the x-basis measurement
     qubit_meas_dict = {}
     for q in qubits_with_error:
-        meas_type = total_paulis_done.get_meas_type(q)
-        if q in indirect_z_ixs:
-            meas_type = 'zi'
+        if q == output_q:
+            meas_type = 'a'
+        else:
+            meas_type = total_paulis_done.get_meas_type(q)
+            if q in indirect_z_ixs:
+                meas_type = 'zi'
         qubit_meas_dict[q] = meas_type_to_ix[meas_type]
 
     # Find the probaility of a particular set of errors given the error model
@@ -132,7 +133,7 @@ def cascade_error_correction(targets, checks, p0, meas_accuracies, indirect_z_ix
         # 2 Find the syndrome
         syndrome = tuple([sum([x in ch.support for x in error_ixs]) % 2 for ch in checks])
         # 3 Find the error pattern
-        error = tuple([sum([x in t.support for x in error_ixs]) % 2 for t in targets])
+        error = tuple([(sum([x in t.support for x in error_ixs]) + int(output_q in error_ixs)) % 2 for t in targets])
         if printing:
             print(f'{flip_pat=}')
             print(f'{error_ixs=}')
@@ -154,6 +155,11 @@ def cascade_error_correction(targets, checks, p0, meas_accuracies, indirect_z_ix
         # print(syndrome, max_keys)
         win_prob += max_value
     # print(f'{win_prob=}')
+    if output_q is not None:
+        win_prob *= meas_accuracies[4]
+    if np.isnan(win_prob):
+        print(confidence, meas_accuracies)
+        exit()
     return win_prob, confidence
 
 
