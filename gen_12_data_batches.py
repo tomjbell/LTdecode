@@ -3,9 +3,10 @@ from multiprocessing import Pool
 import argparse
 import sys
 import networkx as nx
-from decoder_class import FastDecoder
+from decoder_class import FastDecoder, CascadeDecoder
 import bz2
 from os.path import join
+from graphs import graph_from_edges
 
 
 def read_data_from_bz2(line_start, lines_stop, filename, path_to_file):
@@ -58,10 +59,8 @@ def gen_non_isomorphic_graphs(edge_list_in):
     :param edge_list_in:
     :return: list of edge_lists of the unique graphs
     """
-    g = nx.Graph()
-    n = max([i for j in edge_list_in for i in j]) + 1
-    g.add_nodes_from(list(range(n)))
-    g.add_edges_from(edge_list_in)
+    g = graph_from_edges(edge_list_in)
+    n = g.number_of_nodes()
 
     # Give the graph edge attributes
     input = {0: 1}
@@ -110,15 +109,27 @@ def graph_perf(edges):
     iso_out = []
     all_gs = gen_non_isomorphic_graphs(edges)
     for x in all_gs:
-        g = nx.Graph()
-        n = max([i for edge in x for i in edge])
-        g.add_nodes_from(list(range(n)))
-
-        # print(edges)
-        g.add_edges_from(x)
+        g = graph_from_edges(x)
         dec = FastDecoder(g)
         spc = dec.get_dict(condensed=True)
         iso_out.append((x, spc))
+    return iso_out
+
+
+def graph_perf_pauli(edges):
+    """
+    :param graph_info: tuple (class_size, edgelist) of the representative graph of the equivalence class
+    :return: tuple (edgelist, x, y, z results dictionaries)
+    """
+    iso_out = []
+    all_gs = gen_non_isomorphic_graphs(edges)
+    i = 0
+    for x in all_gs:
+        g = graph_from_edges(x)
+        dec = CascadeDecoder(g)
+        bases = ['x', 'y', 'z']
+        xr, yr, zr = [dec.get_dict(basis=b, cascading=False, condensed=True) for b in bases]
+        iso_out.append((x, xr, yr, zr))
     return iso_out
 
 
@@ -160,15 +171,35 @@ if __name__ == '__main__':
         type=str,
         default="",
     )
+    parser.add_argument(
+        "-ofs",
+        "--offset",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "-pb",
+        "--pauli_basis",
+        help="Do pauli basis measurements",
+        action=argparse.BooleanOptionalAction
+    )
 
     arguments = parser.parse_args(sys.argv[1:])
-    array_ix = arguments.array_ix
+    array_ix = arguments.array_ix + arguments.offset
     path_to_data = arguments.path_to_data
     batch_size = arguments.batch_size
     output_dir = arguments.output_dir
     filename = arguments.datafile
+    pauli_basis = arguments.pauli_basis
     if output_dir == "":
         output_dir = path_to_data
+
+    if pauli_basis:
+        func = graph_perf_pauli
+        name_suffix = '_pauli'
+    else:
+        func = graph_perf
+        name_suffix = ''
 
     # Load a chunk of the 12 qubit classes
     # Consider batch_size classes at a time
@@ -179,10 +210,10 @@ if __name__ == '__main__':
     edge_lists = [d[1] for d in graph_data]
 
     with Pool() as p:
-        out = p.map(graph_perf, edge_lists)
+        out = p.map(func, edge_lists)
 
     # Flatten the output
     out_flat = [x for y in out for x in y]
 
-    save_obj(out_flat, f'graph_performance_batch{array_ix}', output_dir)
+    save_obj(out_flat, f'graph_performance{name_suffix}_batch{array_ix}', output_dir)
 

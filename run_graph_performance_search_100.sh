@@ -6,6 +6,8 @@
 #SBATCH --time=2:00:00
 #SBATCH --mem-per-cpu=1000M
 #SBATCH --array=0-99
+#SBATCH --partition=cpu
+
 
 module load languages/anaconda3/2021.09-3.9.7-tflow.1.12-deeplabcut
 date

@@ -6,13 +6,20 @@ from networkx import Graph
 from decoder_class import FastDecoder, CascadeDecoder
 import numpy as np
 from error_correction import best_checks_max_clique, pauli_error_decoder
+from logical_fusions import get_fusion_peformance, fusion_threshold_from_dict
+
+
+def graph_from_edges(edges):
+    g = Graph()
+    n_nodes = max([node for edge in edges for node in edge])
+    g.add_nodes_from(list(range(n_nodes)))
+    g.add_edges_from(edges)
+    return g
 
 
 def is_error_tolerant_multiple_bases(edge_list):
     ps = np.linspace(0.00001, 0.25)
-    g = Graph()
-    g.add_nodes_from(list(range(max([nod for edge in edge_list for nod in edge]))))
-    g.add_edges_from(edge_list)
+    g = graph_from_edges(edge_list)
 
     ec_flags = {'x': False, 'y': False, 'z': False}
     for basis in ['x', 'y', 'z']:
@@ -43,27 +50,33 @@ def graph_perf_on_batch(graph_list):
 
 
 def graph_perf(edges):
-    g = Graph()
-    n = max([i for edge in edges for i in edge])
-    g.add_nodes_from(list(range(n)))
-
-    # print(edges)
-    g.add_edges_from(edges)
-
+    g = graph_from_edges(edges)
     x = FastDecoder(g)
     spc = x.get_dict()
     return edges, spc
 
 
 def graph_perf_pauli(edges):
-    g = Graph()
-    n = max([i for edge in edges for i in edge])
-    g.add_nodes_from(list(range(n)))
-    g.add_edges_from(edges)
+    g = graph_from_edges(edges)
     dec = CascadeDecoder(g)
     bases = ['x', 'y', 'z']
     xr, yr, zr = [dec.get_dict(basis=b, cascading=False) for b in bases]
     return edges, xr, yr, zr
+
+
+def graph_perf_cascading(edges):
+    g = graph_from_edges(edges)
+    dec = CascadeDecoder(g)
+    bases = ['spc', 'x', 'y', 'z']
+    spcr, xr, yr, zr = [dec.get_dict(basis=b, cascading=True) for b in bases]
+    return edges, spcr, xr, yr, zr
+
+
+def graph_perf_fusion(edges):
+    g = graph_from_edges(edges)
+    perf_dicts = get_fusion_peformance(g, decoder_type='ACF')
+    thresh = fusion_threshold_from_dict(perf_dicts, pf=0.5, take_min=False)
+    return edges, perf_dicts, thresh
 
 
 if __name__ == '__main__':
@@ -121,6 +134,17 @@ if __name__ == '__main__':
         type=int,
         default=28,
     )
+    parser.add_argument(
+        "-c",
+        "--cascading",
+        action=argparse.BooleanOptionalAction
+    )
+    parser.add_argument(
+        "-f",
+        "--fusion",
+        help="test logical fusion performance",
+        action=argparse.BooleanOptionalAction
+    )
 
 
     arguments = parser.parse_args(sys.argv[1:])
@@ -129,11 +153,16 @@ if __name__ == '__main__':
     output_dir = arguments.output_dir
     spc_basis = arguments.spc_basis
     pauli_basis = arguments.pauli_basis
-    assert not(spc_basis and pauli_basis)
-    assert (pauli_basis or spc_basis)
     is_test = arguments.test
     do_error_correction = arguments.error_correction
     test_size = arguments.test_size
+    cascading = arguments.cascading
+    fusion = arguments.fusion
+    assert not (spc_basis and pauli_basis)
+    assert (pauli_basis or spc_basis or cascading or fusion)
+    if fusion:
+        assert not (cascading or spc_basis or pauli_basis)
+
 
     if output_dir == "":
         output_dir = path_to_data
@@ -149,17 +178,29 @@ if __name__ == '__main__':
             func = is_error_tolerant_multiple_bases
         else:
             func = graph_perf_pauli
+    elif cascading:
+        func = graph_perf_cascading
+    elif fusion:
+        func = graph_perf_fusion
+
     else:
         raise ValueError('No basis supplied')
-    with Pool() as p:
-        out = p.map(func, edge_lists)
+
     if spc_basis:
         name = f'graph_performance_batch{array_ix}'
-    else:
+    elif pauli_basis:
         if do_error_correction:
             name = f'graph_performance_pauli_ec_batch{array_ix}'
         else:
             name = f'graph_performance_pauli_batch{array_ix}'
+    elif cascading:
+        assert not (spc_basis or pauli_basis or do_error_correction)
+        name = f'graph_performance_cascaded_batch{array_ix}'
+    elif fusion:
+        name = f'graph_performance_fusion_batch{array_ix}'
 
+    with Pool() as p:
+        out = p.map(func, edge_lists)
+    print(name, output_dir)
     save_obj(out, name=name, path=output_dir)
 

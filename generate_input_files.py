@@ -26,7 +26,6 @@ def generate_data_files(filename, path_to_file='', batch_size=1000, max_num_batc
     print(name)
     path = join(cwd, name)
     mkdir(path)
-
     tot_num_data = len(full_data_set)
     a = tot_num_data // batch_size
     if tot_num_data % batch_size == 0:
@@ -72,7 +71,7 @@ if __name__ == '__main__':
         "-bs",
         "--batch_size",
         help="size of batches to examine",
-        type=str,
+        type=int,
         default=1000,
     )
     parser.add_argument(
