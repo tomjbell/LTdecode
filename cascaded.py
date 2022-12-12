@@ -56,8 +56,9 @@ class AnalyticCascadedResult:
             yy_ = self.yy(n-1, t)
             zz_ = self.zz(n-1, t)
             zi_ = self.zi(n-1, t)
-            func = self.get_func(self.xyeffs[self.layer_map(self.max_depth - n)])
-            return t * func(xx_, zi_, 1 - xx_ - zi_, zz_, zi_, 1 - zz_ - zi_, yy_, zi_, 1 - yy_ - zi_, 0, 0, 0)
+            funcx = self.get_func(self.xeffs[self.layer_map(self.max_depth - n)])
+            funcy = self.get_func(self.yeffs[self.layer_map(self.max_depth - n)])
+            return t * max([funcx(xx_, zi_, 1 - xx_ - zi_, zz_, zi_, 1 - zz_ - zi_, yy_, zi_, 1 - yy_ - zi_, 0, 0, 0), funcy(xx_, zi_, 1 - xx_ - zi_, zz_, zi_, 1 - zz_ - zi_, yy_, zi_, 1 - yy_ - zi_, 0, 0, 0)])
 
     def yy(self, n, t):
         if n == 0:
@@ -67,8 +68,10 @@ class AnalyticCascadedResult:
             yy_ = self.yy(n - 1, t)
             zz_ = self.zz(n - 1, t)
             zi_ = self.zi(n - 1, t)
-            func = self.get_func(self.xyeffs[self.layer_map(self.max_depth - n)])
-            return t * func(xx_, zi_, 1 - xx_ - zi_, zz_, zi_, 1 - zz_ - zi_, yy_, zi_, 1 - yy_ - zi_, 0, 0, 0)
+            funcx = self.get_func(self.xeffs[self.layer_map(self.max_depth - n)])
+            funcy = self.get_func(self.yeffs[self.layer_map(self.max_depth - n)])
+            return t * max([funcx(xx_, zi_, 1 - xx_ - zi_, zz_, zi_, 1 - zz_ - zi_, yy_, zi_, 1 - yy_ - zi_, 0, 0, 0),
+                            funcy(xx_, zi_, 1 - xx_ - zi_, zz_, zi_, 1 - zz_ - zi_, yy_, zi_, 1 - yy_ - zi_, 0, 0, 0)])
 
     def zz(self, n, t):
         return t
@@ -126,6 +129,7 @@ class CascadedResultPauli:
         self.ey = [0] * self.max_depth
         self.ez = [0] * self.max_depth
         self.ezi = [0] * self.max_depth
+        self.ea = [0] * self.max_depth
         self.epsilon = 0
         self.eta = 1
         self.ec = ec
@@ -134,7 +138,7 @@ class CascadedResultPauli:
         # print(depth)
         # print(self.pxx[depth], self.pxz[depth], self.pzz[depth], self.pz_z[depth], self.pzz_[depth], self.pz_z_[depth])
         return self.pxx[depth], self.pxz[depth], self.pyy[depth], self.pyz[depth], self.pzz[depth], self.pz_z[depth], \
-               self.pzz_[depth], self.pz_z_[depth], self.ex[depth], self.ey[depth], self.ez[depth], self.ezi[depth]
+               self.pzz_[depth], self.pz_z_[depth], self.ex[depth], self.ey[depth], self.ez[depth], self.ezi[depth], self.ea[depth]
 
     def f_disentangle(self, pxx, pxz, pzz, k):
         if self.from_dict:
@@ -159,21 +163,28 @@ class CascadedResultPauli:
         else:
             return sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)]['spc']])
 
+    def m_indirect(self, basis, pxx, pxz, pzz, k):
+        if self.from_dict:
+            ds = self.results_lists[self.layer_map(k)][basis]
+            return p_from_dict(ds, pxx, pxz, pzz)
+        else:
+            return sum([r.outcome_prob(pxx, pxz, pzz) for r in self.results_lists[self.layer_map(k)][basis]])
+
     def get_all_params(self, eta, depolarising_noise, ec=True):
         self.ec = ec
         self.eta = eta
-        self.epsilon = depolarising_noise/2
+        self.epsilon = depolarising_noise
         for k in reversed(range(self.max_depth)):
             # print(f'{k=}')
             params_k = self.calculate_params(k)
             self.pxx[k], self.pxz[k], self.pyy[k], self.pyz[k], self.pzz[k], self.pz_z[k],\
-            self.pzz_[k], self.pz_z_[k], self.ex[k], self.ey[k], self.ez[k], self.ezi[k] = params_k
+            self.pzz_[k], self.pz_z_[k], self.ex[k], self.ey[k], self.ez[k], self.ezi[k], self.ea[k] = params_k
 
     def calculate_params(self, depth):
         if depth == self.max_depth - 1:
-            return self.eta, 0, self.eta, 0, 0, 0, self.eta, 1-self.eta, self.epsilon, self.epsilon, self.epsilon, self.epsilon
+            return self.eta, 0, self.eta, 0, 0, 0, self.eta, 1-self.eta, 2 * self.epsilon, 2 * self.epsilon, 2 * self.epsilon, 2 * self.epsilon, 3 * self.epsilon
         else:
-            pxx, pxz, pyy, pyz, pzz, pz_z, pzz_, pz_z_, ex, ey, ez, ezi = self.get_var(depth+1)
+            pxx, pxz, pyy, pyz, pzz, pz_z, pzz_, pz_z_, ex, ey, ez, ezi, ea = self.get_var(depth+1)
             # print(f'\n{pxz==pz_z=}\n')
 
             indirect_z_prob = self.f_z_indirect(pxx, pxz, pzz + pzz_, depth + 1)
@@ -190,20 +201,25 @@ class CascadedResultPauli:
             if self.ec:
                 # TODO write this to correctly calculate cascaded errors
                 idx = 0
+                ida = 0
                 # print('##############################')
                 # print(xx)
                 # print(f'{depth=}')
                 for result in self.results_lists[self.layer_map(depth+1)]['xy']:
                     no_flip = result.no_flip_prob_cascade([1-ex, 1-ey, 1-ez, 1-ezi])
-                    accuracy_both = no_flip * (1 - self.epsilon)
-                    print(accuracy_both)
+                    accuracy_both = no_flip * (1 - 2 * self.epsilon)
+                    # print(f'{accuracy_both=}')
                     idx += accuracy_both * result.outcome_prob(pxx, pxz, pzz + pzz_) * self.eta / xx
+                    ida += no_flip * (1 - 3 * self.epsilon) * result.outcome_prob(pxx, pxz, pzz + pzz_) * self.eta / xx
                 idy = idx
                 for r in self.results_lists[self.layer_map(depth+1)]['z']:
                     no_flip = r.no_flip_prob_cascade([1 - ex, 1 - ey, 1 - ez, 1 - ezi])
                     prob = r.outcome_prob(pxx, pxz, pzz + pzz_)
                     # print(prob, no_flip, prob * no_flip * (1-self.eta)/z_z)
-                idzi = sum([result.no_flip_prob_cascade([1-ex, 1-ey, 1-ez, 1-ezi]) * result.outcome_prob(pxx, pxz, pzz + pzz_) * (1-self.eta) / z_z for result in self.results_lists[self.layer_map(depth+1)]['z']])
+                if z_z > 0:
+                    idzi = sum([result.no_flip_prob_cascade([1-ex, 1-ey, 1-ez, 1-ezi]) * result.outcome_prob(pxx, pxz, pzz + pzz_) * (1-self.eta) / z_z for result in self.results_lists[self.layer_map(depth+1)]['z']])
+                else:
+                    idzi = 1.
                 idz_direct = sum([result.no_flip_prob_cascade([1-ex, 1-ey, 1-ez, 1-ezi]) * result.outcome_prob(pxx, pxz, pzz + pzz_) / self.eta for result in self.results_lists[self.layer_map(depth+1)]['z_direct']])
 
                 idz = idz_direct
@@ -212,8 +228,30 @@ class CascadedResultPauli:
                 print(f'{idx=}, {idzi=}, {idz=}')
                 print('\n')
             else:
-                idx = idy = idz = idzi = 1
-            return xx, xzi, yy, yzi, zz, z_z, zz_, z_z_, 1-idx, 1-idy, 1-idz, 1-idzi
+                idx = idy = idz = idzi = ida = 1
+            return xx, xzi, yy, yzi, zz, z_z, zz_, z_z_, 1-idx, 1-idy, 1-idz, 1-idzi, 1-ida
+
+    def meff_prob(self, depth, basis):
+        """
+        Find the probability and accuracy of a measurement in a particular basis ('x', 'y', 'z', 'spc')
+        :param depth:
+        :param basis:
+        :return:
+        """
+        k = self.max_depth - depth
+        # print(self.pxx)
+        if self.pxx[k] is None:
+            raise ValueError('call get_all_params() first')
+
+        meff_prob = self.m_indirect(basis, self.pxx[k], self.pxz[k], self.pzz[k] + self.pzz_[k], k)
+        if self.ec:
+            total_acc = 0
+            for result in self.results_lists[self.layer_map(k)][basis]:
+                meff_acc = result.no_flip_prob_cascade([1 - self.ex[k], 1 - self.ey[k], 1 - self.ez[k], 1 - self.ezi[k], 1-self.ea[k]])
+                total_acc += meff_acc * result.outcome_prob(self.pxx[k], self.pxz[k], self.pzz[k] + self.pzz_[k])
+            return meff_prob, total_acc / meff_prob
+        else:
+            return meff_prob
 
     def get_spc_prob(self, maxdepth):
         """
@@ -226,11 +264,6 @@ class CascadedResultPauli:
         # print(self.pxx)
         if self.pxx[k] is None:
             raise ValueError('call get_all_params() first')
-        # print('parameters to use = ' + str(k))
-        # print(self.pxx, self.pxz, self.pzz, self.pz_z, self.pzz_, self.pz_z_)
-        # print([self.pzz[i] + self.pzz_[i] for i in range(self.max_depth)])
-        # print([self.f_z_indirect(self.pxx[n], self.pxz[n], self.pzz[n] + self.pzz_[n], k=n) for n in range(self.max_depth)])
-        #TODO Figure out how to return the accuracy of the pathfinding
         # Include the error in the disentangling measurement of the target
 
         spc_prob = self.f_spc(self.pxx[k], self.pxz[k], self.pzz[k] + self.pzz_[k], k)
@@ -240,8 +273,6 @@ class CascadedResultPauli:
                 disentangle_t_acc = 1 - self.ex[k]
                 spc_pauli_acc = result.no_flip_prob_cascade([1 - self.ex[k], 1 - self.ey[k], 1 - self.ez[k], 1 - self.ezi[k]])
                 total_acc += (disentangle_t_acc * spc_pauli_acc + (1 - disentangle_t_acc) * (1 - spc_pauli_acc)) * result.outcome_prob(self.pxx[k], self.pxz[k], self.pzz[k] + self.pzz_[k])
-            # acc = sum([result.no_flip_prob_cascade([1 - self.ex[k], 1 - self.ey[k], 1 - self.ez[k], 1 - self.ezi[k]])
-            # * result.outcome_prob(self.pxx[k], self.pxz[k], self.pzz[k] + self.pzz_[k]) for result in self.results_lists[self.layer_map(k)]['spc']]) / spc_prob
             return spc_prob, total_acc/spc_prob
         else:
             return spc_prob
@@ -250,7 +281,6 @@ class CascadedResultPauli:
 class ConcatenatedResult:
     def __init__(self, concat_result_list, cascade_ix=None, ec=False):
         """
-
         :param concat_result_list: A list of outcome dictionaries, where each dictionary has the outcomes of
         decoding in all bases for the graph at that depth, from which we can calculate effective error rates etc
         :param cascade_ix: The order of the graphs in the cascade, so that we can search different cascades without
@@ -322,18 +352,18 @@ class ConcatenatedResult:
     def calculate_params(self, depth):
         if depth == self.max_depth - 1:
             if self.ec:
-                return self.eta, self.eta, self.eta, self.eta, 2 * self.error, 2 * self.error, 2 * self.error, 2 * self.error
+                return self.eta, self.eta, self.eta, self.eta, 2 * self.error, 2 * self.error, 2 * self.error, 3 * self.error
             else:
                 return self.eta, self.eta, self.eta, self.eta
         else:
             if self.ec:
                 px, py, pz, pa, ex, ey, ez, ea = self.get_var(depth+1)
-                x, erx = self.f_m_indirect('x', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
-                y, ery = self.f_m_indirect('y', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
-                z, erz = self.f_m_indirect('z', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
-                a, era = self.f_m_indirect('spc', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
+                x, accx = self.f_m_indirect('x', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
+                y, accy = self.f_m_indirect('y', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
+                z, accz = self.f_m_indirect('z', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
+                a, acca = self.f_m_indirect('spc', px, py, pz, pa, depth + 1, ex, ey, ez, ea)
 
-                return x, y, z, a, erx, ery, erz, era
+                return x, y, z, a, 1 - accx, 1 - accy, 1 - accz, 1 - acca
             else:
                 px, py, pz, pa = self.get_var(depth+1)
                 x = self.f_m_indirect('x', px, py, pz, pa, depth + 1)
