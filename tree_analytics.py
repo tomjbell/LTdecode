@@ -1,5 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from itertools import product
+from helpers import save_obj, load_obj
+from os import getcwd
 
 
 # Theoretical success probability for tree graphs from Phys. Rev. Lett. 97, 120501 (2006)
@@ -47,68 +50,49 @@ def tree_q_num(b_list):
     for b in b_list:
         num_last_layer *= b
         tot += num_last_layer
-    return tot
+    return tot - 1
 
 
-def test_trees():
-    pass
+def get_tree_data(eta=0.9, max_branching=10, max_depth=5):
+    data = []
+    i = 0
+    # branching ratio to vary between 1 and max_branching
+    for b_rat in product(list(range(1, max_branching)), repeat=max_depth):
+        i += 1
+        n_q = tree_q_num(b_rat)
+        eta_log = p_succ_tree(eta, b_rat)
+        data.append((n_q, eta_log))
+    return data
+
+
+def best_tree_data(eta, max_branch, max_depth, plot=False, show=True, save=False, from_file=False):
+    if from_file:
+        bests = load_obj(f'best_trees_{eta}_max_branch_{max_branch}_depth_{max_depth}', getcwd()+'/best_graphs')
+    else:
+        data_full = []
+        for r in range(1, max_depth+1):
+            dn = get_tree_data(eta, max_branch, r)
+            data_full += dn
+        data_s = sorted(data_full, key=lambda x: x[0])
+        bests = []
+        low_q_winner = 0
+        for d in data_s:
+            if d[1] > low_q_winner:
+                low_q_winner = d[1]
+                bests.append(d)
+        if save:
+            save_obj(bests, f'best_trees_{eta}_max_branch_{max_branch}_depth_{max_depth}', getcwd()+'/best_graphs')
+    if plot:
+        plt.plot([b[0] for b in bests], [1 - b[1] for b in bests], '+')
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.xlabel('Number of qubits')
+        plt.ylabel('Effective loss')
+    if show:
+        plt.show()
 
 
 if __name__ == '__main__':
-
-    transmissions = np.linspace(0, 1)
-    # Analytic tree results
-    for k in range(1, 20):
-        # print(Z_ind_tree(0.9, k, b_list))
-        out = [p_succ_tree(t, [4, 20, 5] * k) for t in transmissions]
-        plt.plot(transmissions, out)
-    plt.show()
-    exit()
-
-    nq = 5
-    max_depth = 5
-    transmissions = np.linspace(0, 1)
-    from graphs import gen_star_graph, gen_ring_graph
-    from decoder_class import CascadeDecoder
-    from cascaded import CascadedResultPauli
-    bases = ['spc', 'x', 'y', 'z', 'xy', 'z_direct']
-    g = gen_ring_graph(nq)
-    decoder = CascadeDecoder(g)
-    for basis in bases:
-        decoder.build_tree(basis=basis, ec=False, cascading=True)
-    result = CascadedResultPauli([decoder.successful_outcomes], cascade_ix=[0] * max_depth)
-    print(decoder.successful_outcomes)
-
-    # Analytic tree results
-    # for k in range(1, 6):
-    #     # print(Z_ind_tree(0.9, k, b_list))
-    #     out = [p_succ_tree(t, [nq-1] * k) for t in transmissions]
-    #     plt.plot(transmissions, out)
-
-    depolarising_noise = 0.
-    out = [[] for _ in range(max_depth)]
-    for t in transmissions:
-        result.get_all_params(t, depolarising_noise, ec=False)
-        for n_graphs in range(1, max_depth + 1):
-            spc_prob = result.get_spc_prob(n_graphs)
-            out[n_graphs - 1].append(spc_prob)
-    for i in range(max_depth):
-        plt.plot(transmissions, out[i])
-    plt.plot((0, 1), (0, 1), 'k--')
-    # plt.title('Cascaded SPF')
-    # plt.show()
-
-
-    # plt.plot((0, 1), (0, 1), 'k--')
-    plt.xlim(0, 1)
-    plt.ylim(0, 1)
-    plt.legend([f'{depth=}' for depth in range(1, 6)])
-    plt.show()
-    #
-    # branches = [2, 1, 1]
-    # plt.plot(transmissions, [p_succ_tree(t, branches) for t in transmissions])
-    # plt.plot((0, 1), (0, 1), 'k--')
-    # plt.show()
-    # print(tree_q_num(branches))
-    # print(p_succ_tree(0.9, branches))
-    # print(Z_ind_tree(0.9, 0, [3, 1]))
+    # for eta in [0.7, 0.8, 0.9, 0.95, 0.99]:
+    #     best_tree_data(eta, 13, 5, plot=True, show=True, from_file=False, save=False)
+    pass
